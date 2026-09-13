@@ -71,19 +71,30 @@ class ScoringTest {
     }
 
     @Test
-    fun `half pow x can diverge from Python by exactly one ULP at a half-integer exponent`() {
-        // Documented finding for #10 (A4 byte-identical parity), not fixed here:
-        // Python's 0.5 ** 2.5 == 0.1767766952966369 (bits ...3bcd); Math.pow's
-        // 0.5.pow(2.5) == 0.17677669529663687 (bits ...3bcc) -- 1 ULP low.
-        // Neither implementation is wrong (both are within the ~1 ULP libm
-        // permits); #10 needs a documented strategy (e.g. round before
-        // comparing, or a shared correctly-rounded pow) if it wants to survive
-        // an exponent that lands exactly on a half-integer.
-        val pythonBits = 0x3fc6a09e667f3bcdUL
-        val kotlinValue = 0.5.pow(2.5)
-        val kotlinBits = java.lang.Double.doubleToRawLongBits(kotlinValue).toULong()
-        assertTrue(kotlinBits != pythonBits, "expected the known 1-ULP divergence; re-verify if this now matches")
-        assertEquals(1L, (pythonBits - kotlinBits).toLong(), "divergence widened beyond the documented 1 ULP")
+    fun `half pow x stays within one ULP of Python at a half-integer exponent`() {
+        // Documented finding for #10 (A4 byte-identical parity), not fixed
+        // here -- and NOT just a Kotlin-vs-Python fact, which is why this
+        // asserts a bound rather than a fixed divergence:
+        //
+        // Python's 0.5 ** 2.5 == 0.1767766952966369 (bits ...3bcd). Locally
+        // (GraalVM 21.0.10, aarch64) Math.pow's 0.5.pow(2.5) landed 1 ULP low
+        // at ...3bcc; on this project's CI (Temurin 21, Linux x64) the same
+        // Kotlin source instead matches Python's bits exactly. Same bytecode,
+        // same exponent, different JVM vendor/platform, different pow result
+        // -- Math.pow's ~1 ULP tolerance is real and vendor-observable, not
+        // hypothetical. That's a sharper C6 concern than "Kotlin vs. Python
+        // parity": it means two JVM builds running the identical Kotlin
+        // implementation are not guaranteed bit-for-bit identical to each
+        // other either. #10 needs a strategy for this (round before
+        // comparing, a shared correctly-rounded pow, or pinning the JVM
+        // distribution as part of C6's determinism contract).
+        val pythonBits = 0x3fc6a09e667f3bcdL
+        val kotlinBits = java.lang.Double.doubleToRawLongBits(0.5.pow(2.5))
+        val ulpDelta = kotlinBits - pythonBits
+        assertTrue(
+            abs(ulpDelta) <= 1,
+            "pow(0.5, 2.5) diverged by more than the documented 1 ULP: kotlin=$kotlinBits python=$pythonBits delta=$ulpDelta",
+        )
     }
 
     @Test
