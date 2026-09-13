@@ -44,6 +44,23 @@ class ConfigTest {
         assertEquals(emptyMap(), loaded.ingest.identity)
         assertEquals(400.0, loaded.ingest.satLines)
         assertEquals(emptyList(), loaded.critical)
+        assertEquals(false, loaded.gate.exit1OnAtRisk)
+        assertEquals(null, loaded.gate.breakGlassPerson)
+    }
+
+    @Test
+    fun `gate config and break_glass_person are read from the config file (SPEC §5)`() {
+        val config = tempConfigFile(
+            """
+            {"modules": {"core": ["src/core/*"]}, "critical": ["core"],
+             "gate": {"exit1_on_at_risk": true}, "break_glass_person": "oncall@example.com"}
+            """.trimIndent(),
+        )
+        val loaded = loadConfig(config.path)
+
+        assertEquals(listOf("core"), loaded.critical)
+        assertEquals(true, loaded.gate.exit1OnAtRisk)
+        assertEquals("oncall@example.com", loaded.gate.breakGlassPerson)
     }
 
     @Test

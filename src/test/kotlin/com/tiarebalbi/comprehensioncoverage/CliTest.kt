@@ -1,7 +1,15 @@
 package com.tiarebalbi.comprehensioncoverage
 
+import com.tiarebalbi.comprehensioncoverage.config.loadConfig
+import com.tiarebalbi.comprehensioncoverage.gate.runGate
+import com.tiarebalbi.comprehensioncoverage.git.collect
 import com.tiarebalbi.comprehensioncoverage.git.commit
+import com.tiarebalbi.comprehensioncoverage.git.readAttestations
+import com.tiarebalbi.comprehensioncoverage.git.readCommits
 import com.tiarebalbi.comprehensioncoverage.git.tempGitRepo
+import com.tiarebalbi.comprehensioncoverage.scoring.PersonModule
+import com.tiarebalbi.comprehensioncoverage.scoring.buildModuleMap
+import com.tiarebalbi.comprehensioncoverage.scoring.scoreAll
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.PrintStream
@@ -132,6 +140,208 @@ class CliTest {
         val exitCode = runCli(arrayOf("--config", "whatever.json"), err = PrintStream(err))
         assertEquals(2, exitCode)
         assertTrue(err.toString().contains("--repo"), err.toString())
+    }
+
+    /**
+     * Transcribed and verified from a live run of `prototype/comprehension.py`
+     * against this exact repo/config on 2026-09-13:
+     *
+     *   python3 prototype/comprehension.py --repo <tmp> --config <cfg.json> \
+     *     --as-of 2024-10-09T22:13:20Z --gate
+     *
+     * stdout below is copied verbatim from that run (SPEC §5.2, issue #9).
+     */
+    @Test
+    fun `--gate exits 2 on a DARK critical module and prints remediation text byte for byte`() {
+        val repo = tempGitRepo()
+        val configFile = Files.createTempFile("cli-test-config", ".json").toFile().apply { deleteOnExit() }
+        try {
+            buildSyntheticRepo(repo)
+            configFile.writeText(
+                """{"modules": {"core": ["src/core/*"], "web": ["src/web/*"]}, """ +
+                    """"identity": {"dana@example.com": "Dana"}, "critical": ["core"]}""",
+            )
+            val stdout = ByteArrayOutputStream()
+
+            val exitCode = runCli(
+                arrayOf(
+                    "--repo", repo.path, "--config", configFile.path,
+                    "--as-of", "2024-10-09T22:13:20Z", "--gate",
+                ),
+                out = PrintStream(stdout),
+            )
+
+            assertEquals(2, exitCode)
+            assertEquals(
+                "  core  ░░░░░░░░░░  0 comprehender(s)  DARK\n" +
+                    "  web   ██████████  2 comprehender(s)  COVERED\n" +
+                    "\n" +
+                    "GATE: DARK critical module(s): core — an agent change here cannot merge " +
+                    "without re-establishing comprehension.\n" +
+                    "  core: Tiare holds the strongest remaining evidence; last AGENT_MEDIATED " +
+                    "evidence 30d before as-of.\n",
+                stdout.toString(),
+            )
+        } finally {
+            repo.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `--break-glass without --gate is rejected with exit code 1, matching the prototype's sys_exit`() {
+        val err = ByteArrayOutputStream()
+        val exitCode = runCli(
+            arrayOf("--repo", ".", "--config", "whatever.json", "--break-glass", "INC-1"),
+            err = PrintStream(err),
+        )
+        assertEquals(1, exitCode)
+        assertTrue(err.toString().contains("--gate"), err.toString())
+    }
+
+    @Test
+    fun `--break-glass without --break-glass-person or config fallback fails with exit code 1`() {
+        val repo = tempGitRepo()
+        val configFile = Files.createTempFile("cli-test-config", ".json").toFile().apply { deleteOnExit() }
+        try {
+            buildSyntheticRepo(repo)
+            configFile.writeText(
+                """{"modules": {"core": ["src/core/*"], "web": ["src/web/*"]}, "critical": ["core"]}""",
+            )
+            val err = ByteArrayOutputStream()
+            val exitCode = runCli(
+                arrayOf(
+                    "--repo", repo.path, "--config", configFile.path,
+                    "--as-of", "2024-10-09T22:13:20Z", "--gate", "--break-glass", "INC-1",
+                ),
+                err = PrintStream(err),
+            )
+            assertEquals(1, exitCode)
+            assertTrue(err.toString().contains("--break-glass-person"), err.toString())
+        } finally {
+            repo.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `--break-glass downgrades a DARK gate exit to 0 and writes the INCIDENT_DIAGNOSED stub`() {
+        val repo = tempGitRepo()
+        val configFile = Files.createTempFile("cli-test-config", ".json").toFile().apply { deleteOnExit() }
+        try {
+            buildSyntheticRepo(repo)
+            configFile.writeText(
+                """{"modules": {"core": ["src/core/*"], "web": ["src/web/*"]}, """ +
+                    """"identity": {"dana@example.com": "Dana"}, "critical": ["core"]}""",
+            )
+
+            val exitCode = runCli(
+                arrayOf(
+                    "--repo", repo.path, "--config", configFile.path,
+                    "--as-of", "2024-10-09T22:13:20Z", "--gate",
+                    "--break-glass", "INC-1", "--break-glass-person", "oncall@example.com",
+                ),
+                out = PrintStream(ByteArrayOutputStream()),
+            )
+
+            assertEquals(0, exitCode)
+            val stub = File(repo, ".comprehension/attestations.yaml").readText()
+            assertTrue(stub.contains("type: INCIDENT_DIAGNOSED"), stub)
+            assertTrue(stub.contains("email: oncall@example.com"), stub)
+            assertTrue(stub.contains("incident_ref: \"INC-1\""), stub)
+            // dana's original attestation must survive the append unmodified.
+            assertTrue(stub.contains("email: dana@example.com"), stub)
+        } finally {
+            repo.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `--break-glass with a blank incident ref fails with exit code 1, not a silent exit 0`() {
+        // The bug this guards: a blank --break-glass must never be silently
+        // accepted (which would downgrade a red gate to green with no
+        // incident ref on record).
+        val repo = tempGitRepo()
+        val configFile = Files.createTempFile("cli-test-config", ".json").toFile().apply { deleteOnExit() }
+        try {
+            buildSyntheticRepo(repo)
+            configFile.writeText(
+                """{"modules": {"core": ["src/core/*"], "web": ["src/web/*"]}, "critical": ["core"]}""",
+            )
+            val err = ByteArrayOutputStream()
+            val exitCode = runCli(
+                arrayOf(
+                    "--repo", repo.path, "--config", configFile.path,
+                    "--as-of", "2024-10-09T22:13:20Z", "--gate", "--break-glass", "",
+                ),
+                err = PrintStream(err),
+            )
+            assertEquals(1, exitCode)
+            assertTrue(err.toString().contains("non-empty incident ref"), err.toString())
+            assertTrue(!File(repo, ".comprehension/attestations.yaml").readText().contains("INCIDENT_DIAGNOSED"))
+        } finally {
+            repo.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `--break-glass-person blank fails with exit code 1`() {
+        val repo = tempGitRepo()
+        val configFile = Files.createTempFile("cli-test-config", ".json").toFile().apply { deleteOnExit() }
+        try {
+            buildSyntheticRepo(repo)
+            configFile.writeText(
+                """{"modules": {"core": ["src/core/*"], "web": ["src/web/*"]}, "critical": ["core"]}""",
+            )
+            val err = ByteArrayOutputStream()
+            val exitCode = runCli(
+                arrayOf(
+                    "--repo", repo.path, "--config", configFile.path,
+                    "--as-of", "2024-10-09T22:13:20Z", "--gate",
+                    "--break-glass", "INC-1", "--break-glass-person", "   ",
+                ),
+                err = PrintStream(err),
+            )
+            assertEquals(1, exitCode)
+            assertTrue(err.toString().contains("non-empty email"), err.toString())
+        } finally {
+            repo.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `break-glass does not manufacture comprehension -- scores are unchanged after the stub is written`() {
+        val repo = tempGitRepo()
+        val configFile = Files.createTempFile("cli-test-config", ".json").toFile().apply { deleteOnExit() }
+        try {
+            buildSyntheticRepo(repo)
+            configFile.writeText(
+                """{"modules": {"core": ["src/core/*"], "web": ["src/web/*"]}, "critical": ["core"]}""",
+            )
+            val loaded = loadConfig(configFile.path)
+            val asOf = T0 + 330 * DAY // "2024-10-09T22:13:20Z"
+
+            fun scoresNow(): Map<PersonModule, Double> {
+                val commits = readCommits(repo.path, loaded.ingest.ref)
+                val attestations = readAttestations(repo.path, loaded.ingest)
+                val (events, sizes) = collect(loaded.ingest, commits, asOf, attestations)
+                return scoreAll(loaded.scoring, events, sizes, asOf)
+            }
+
+            val before = scoresNow()
+            val modules = buildModuleMap(loaded.scoring, before, loaded.ingest.modules.keys)
+            val commits = readCommits(repo.path, loaded.ingest.ref)
+            val attestations = readAttestations(repo.path, loaded.ingest)
+            val (events, _) = collect(loaded.ingest, commits, asOf, attestations)
+
+            val outcome = runGate(
+                loaded.gate, loaded.critical, repo.path, modules, events, asOf,
+                "INC-99", "oncall@example.com", loaded.scoring.thetaCovered,
+            )
+            assertEquals(0, outcome.exitCode)
+
+            assertEquals(before, scoresNow())
+        } finally {
+            repo.deleteRecursively()
+        }
     }
 
     @Test

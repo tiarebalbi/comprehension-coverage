@@ -11,6 +11,14 @@ import java.io.File
  * behavior. Returns raw (lowercased) emails, not yet resolved to a
  * person: identity resolution needs the commit stream, which only
  * [collect] has (SPEC §2.1).
+ *
+ * A record may also carry a `type` field (SPEC §2): its absence means
+ * `ATTESTED`, the only type this reader ingests in v0.1. A `type` naming a
+ * reserved-not-implemented class (e.g. `INCIDENT_DIAGNOSED`, written by
+ * `--break-glass`, SPEC §5) is a legitimate record, not a malformed one --
+ * it is skipped with a stderr warning rather than folded into evidence.
+ * This is what keeps a break-glass stub from silently manufacturing
+ * comprehension.
  */
 fun readAttestations(repo: String, config: IngestConfig): List<Attestation> {
     val file = File(repo, ".comprehension/attestations.yaml")
@@ -44,6 +52,14 @@ fun readAttestations(repo: String, config: IngestConfig): List<Attestation> {
     for (rec in records) {
         for (required in listOf("email", "module", "timestamp")) {
             require(required in rec) { "attestations.yaml: record missing '$required': $rec" }
+        }
+        val type = rec["type"] ?: "ATTESTED"
+        if (type != "ATTESTED") {
+            System.err.println(
+                "comprehension: attestations.yaml: skipping reserved evidence " +
+                    "class '$type' (declared interface, not ingested in v0.1): $rec"
+            )
+            continue
         }
         val module = rec.getValue("module")
         if (module !in config.modules) {

@@ -97,4 +97,35 @@ class AttestationsTest {
             repo.deleteRecursively()
         }
     }
+
+    @Test
+    fun `a record with a reserved type is skipped with a warning, not folded into evidence`() {
+        val repo = tempDir()
+        try {
+            val config = IngestConfig(modules = mapOf("core" to listOf("src/core/*")))
+            File(repo, ".comprehension").mkdirs()
+            File(repo, ".comprehension/attestations.yaml").writeText(
+                "- email: oncall@example.com\n" +
+                    "  module: core\n" +
+                    "  timestamp: \"2026-09-08T00:00:00Z\"\n" +
+                    "  type: INCIDENT_DIAGNOSED\n" +
+                    "  incident_ref: \"INC-7\"\n"
+            )
+
+            val originalErr = System.err
+            val captured = ByteArrayOutputStream()
+            System.setErr(PrintStream(captured))
+            val result = try {
+                readAttestations(repo.path, config)
+            } finally {
+                System.setErr(originalErr)
+            }
+
+            assertEquals(emptyList(), result)
+            val warning = captured.toString()
+            assertTrue(warning.contains("INCIDENT_DIAGNOSED") && warning.contains("reserved"), warning)
+        } finally {
+            repo.deleteRecursively()
+        }
+    }
 }
