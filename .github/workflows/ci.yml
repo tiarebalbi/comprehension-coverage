@@ -38,5 +38,12 @@ jobs:
           java-version: "21"
           cache: "gradle"
 
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
       - name: Build Kotlin scaffold
         run: ./gradlew build
+
+      - name: A4 parity check (Kotlin vs. prototype, synthetic repo)
+        run: python3 scripts/parity_check.py --synthetic
