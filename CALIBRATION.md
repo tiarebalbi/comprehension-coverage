@@ -208,14 +208,24 @@ gap noted above.
 
 ---
 
-## Note: `ATTESTED` is declared but unimplemented
+## Note: `ATTESTED` is declared but unimplemented — resolved, issue #13
 
-Not one of RUN-NOTES' two candidates, but adjacent and worth tracking here:
-`SPEC.md` §2 lists `ATTESTED` as an evidence type v0.1 extracts (via
+Not one of RUN-NOTES' two candidates, but adjacent and was worth tracking
+here: `SPEC.md` §2 listed `ATTESTED` as an evidence type v0.1 extracts (via
 `.comprehension/attestations.yaml`), and `DEFAULTS["weights"]["ATTESTED"]`
-exists in the prototype, but `collect()` never emits `ATTESTED` events — no
-code reads `.comprehension/attestations.yaml`. This is a spec/prototype
-conflict, not a calibration candidate: `ATTESTED` is supposed to exist in
-v0.1, unlike `REVIEWED`. Flagged for `PLAN.md` sequencing rather than logged
-as OPEN/ACCEPTED here, since it isn't a parameter change — it's a missing
-implementation of already-decided scope.
+existed in the prototype, but `collect()` never emitted `ATTESTED` events —
+no code read `.comprehension/attestations.yaml`. This was a spec/prototype
+conflict, not a calibration candidate: `ATTESTED` was supposed to exist in
+v0.1, unlike `REVIEWED`.
+
+**Resolved** in issue #13: `read_attestations()` now parses
+`.comprehension/attestations.yaml` (a restricted YAML subset — no
+third-party dependency, per README) and `collect()` folds the resulting
+events into the same chronological pass as commits, so their churn-based
+decay reflects real churn up to the attestation's timestamp without the
+attestation itself counting as churn. `SPEC.md` §2 documents the schema and
+the magnitude convention (`ATTESTED` fixes magnitude at `SAT_LINES` — a
+discrete claim, not scaled by lines). Golden fixture gained a case: Dana
+holds attestation-only evidence on `web` (no git history at all), moving
+`web` from `AT_RISK` to `COVERED` — `weights.ATTESTED` (0.6) is now
+exercised, not just an unused default.
