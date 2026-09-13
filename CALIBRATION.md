@@ -56,6 +56,15 @@ below were run against the identical commit set), but it means this
 experiment's absolute numbers are not bit-for-bit reproducible against
 RUN-NOTES' original run until #3 lands.
 
+**Recorded under pre-#3 `--all` semantics.** Everything below through the
+"Flat 540d is not adopted" paragraph was run before issue #3 (SPEC §2.1)
+landed — i.e. against `read_commits`'s old `git log --all` behavior, the
+6,422-commit set noted above, not the 6,169-commit, `HEAD`-scoped set the
+current implementation reads. The decision itself doesn't change (see the
+re-verification below), but the absolute numbers in this section are a
+`--all` snapshot, not reproducible against current `main` without passing
+`--all` explicitly.
+
 **Three variants**, same config (`prototype/express-config.json`), same
 pinned clone and `--as-of`:
 
@@ -153,6 +162,40 @@ the quiescence-scaled mechanism; there is no config value that reproduces
 it exactly other than setting `Q` such that `H_wall*(1+Q) = 540` *and*
 accepting the churned-away-evidence reprieve that comes with it, which is
 the behavior this decision explicitly rejects.
+
+### Re-verified under §2.1 semantics (2026-09-14)
+
+Re-ran the same three variants on the same pinned express clone (SHA
+`3ce6d0eb`, `--as-of 2026-09-13T00:00:00Z`), this time with `read_commits`
+scoped to `HEAD` per issue #3/SPEC §2.1 (6,169 commits, matching RUN-NOTES'
+original citation — not the 6,422 the `--all`-era numbers above used).
+
+Wilson `router` score:
+
+| Variant | pre-#3 (`--all`) | post-#3 (`HEAD`) |
+|---|---|---|
+| (a) baseline 180d | 0.0023 | 0.0023 |
+| (b) flat 540d | 0.1379 | 0.1340 |
+| (c) quiescence Q=2 | 0.1196 | 0.1159 |
+
+Small shifts in (b)/(c) (ref-scoping changes which commits contribute to
+`router`'s churn accounting), but **the decision is unchanged**: `router`
+stays `DARK` in all three variants under `HEAD` scoping too, Wilson's score
+stays well below `θ_person = 0.5` in every case, and (c) still tracks (b)
+closely on this module — no overcorrection, same conclusion as the
+original experiment.
+
+One module-level result *did* change, and it's worth recording because
+it's a direct demonstration of why §2.1 exists: `request` was `AT_RISK`
+(1 comprehender) under the old `--all` numbers above; under `HEAD` scoping
+it is **`DARK`** (0 comprehenders) in all three variants. The former sole
+comprehender, Sebastian Beltran, scored `1.0` on `request` under `--all`
+but `0.0693` under `HEAD` (baseline variant, both otherwise identical
+inputs) — his highest-value evidence lived on a commit reachable only from
+a ref outside `HEAD` that the old `--all` invocation happened to pick up
+from the clone. That's exactly the non-determinism §2.1 was written to
+close: which refs a clone happens to have fetched should not change
+whether a module reads as covered.
 
 ---
 
