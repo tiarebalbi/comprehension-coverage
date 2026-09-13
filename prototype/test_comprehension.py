@@ -106,6 +106,72 @@ def test_departed_excluded_from_counts():
     assert modules["core"]["status"] == "DARK"  # evidence exists, holder is gone
 
 
+def test_as_of_requires_explicit_utc_offset():
+    # C6 / issue #3: a tz-naive --as-of must be rejected, not silently
+    # resolved against the invoking machine's local timezone.
+    try:
+        cc.parse_as_of("2026-09-13T00:00:00")  # no 'Z', no offset
+        assert False, "expected ValueError for tz-naive --as-of"
+    except ValueError:
+        pass
+    # tz-aware forms still work and agree on the same instant.
+    assert cc.parse_as_of("2026-09-13T00:00:00Z") == \
+        cc.parse_as_of("2026-09-13T00:00:00+00:00") == 1789257600
+
+
+# ---------------------------------------------------------------- git determinism (issue #3)
+
+def test_read_commits_scoped_to_ref():
+    # SPEC §2.1: history comes from a single named ref, not every ref a
+    # clone happens to have fetched (the --all this replaces would pull in
+    # side-branch commits regardless of which branch is being analyzed).
+    tmp = tempfile.mkdtemp()
+    try:
+        os.makedirs(f"{tmp}/src", exist_ok=True)
+        git(tmp, "init", "-q", "-b", "main")
+        with open(f"{tmp}/src/a.txt", "w") as f:
+            f.write("a\n")
+        commit(tmp, "Alice", "alice@example.com", T0, "on main")
+        git(tmp, "checkout", "-q", "-b", "side")
+        with open(f"{tmp}/src/b.txt", "w") as f:
+            f.write("b\n")
+        commit(tmp, "Bob", "bob@example.com", T0 + DAY, "on side")
+        git(tmp, "checkout", "-q", "main")
+
+        on_main = cc.read_commits(tmp, "main")
+        assert [c.author_name for c in on_main] == ["Alice"]
+        on_side = cc.read_commits(tmp, "side")
+        assert [c.author_name for c in on_side] == ["Alice", "Bob"]
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_read_commits_ties_broken_by_sha():
+    # SPEC §2.1: two commits sharing a timestamp get a fixed, code-level
+    # total order (timestamp, sha) rather than relying on git's own
+    # same-timestamp ordering, which isn't guaranteed stable across
+    # versions. Build two independent (parentless-in-effect) commits with
+    # the identical author timestamp and confirm the returned order matches
+    # ascending sha regardless of creation order.
+    tmp = tempfile.mkdtemp()
+    try:
+        os.makedirs(f"{tmp}/src", exist_ok=True)
+        git(tmp, "init", "-q", "-b", "main")
+        with open(f"{tmp}/src/a.txt", "w") as f:
+            f.write("a\n")
+        commit(tmp, "Alice", "alice@example.com", T0, "first")
+        with open(f"{tmp}/src/a.txt", "a") as f:
+            f.write("a2\n")
+        commit(tmp, "Alice", "alice@example.com", T0, "second, same timestamp")
+
+        commits = cc.read_commits(tmp, "main")
+        assert [c.timestamp for c in commits] == [T0, T0]
+        shas = [c.sha for c in commits]
+        assert shas == sorted(shas), "same-timestamp commits must sort by sha"
+    finally:
+        shutil.rmtree(tmp)
+
+
 # ---------------------------------------------------------------- golden test
 
 def git(repo, *args, env=None):
