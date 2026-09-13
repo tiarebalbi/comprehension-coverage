@@ -26,10 +26,35 @@ def cfg_with(**over):
 # ---------------------------------------------------------------- unit tests
 
 def test_decay_wall_clock_half_life():
-    cfg = cfg_with()
+    # quiescence_stretch=0 isolates the base h_wall_days mechanic (churn_ratio=0
+    # -> h_wall_eff == h_wall_days) from the quiescence stretch tested below.
+    cfg = cfg_with(quiescence_stretch=0.0)
     e = cc.Evidence("alice", "core", "AUTHORED", T0, cfg["sat_lines"])  # value 1.0
     scores = cc.score_all(cfg, [e], {"core": 1000.0}, T0 + 180 * DAY)
     assert abs(scores[("alice", "core")] - 0.5) < 1e-9, scores
+
+
+def test_quiescence_stretches_frozen_evidence():
+    # CALIBRATION.md candidate 1: a frozen module (churn_ratio=0) stretches the
+    # wall half-life to h_wall*(1+stretch) -- default stretch=2.0 means 3x.
+    cfg = cfg_with()
+    e = cc.Evidence("alice", "core", "AUTHORED", T0, cfg["sat_lines"])
+    scores = cc.score_all(cfg, [e], {"core": 1000.0}, T0 + 540 * DAY)
+    assert abs(scores[("alice", "core")] - 0.5) < 1e-9, scores
+
+
+def test_quiescence_does_not_stretch_fully_churned_evidence():
+    # At churn_ratio == churn_cap (module fully rewritten by others since the
+    # evidence), the quiescence stretch relaxes to 0: h_wall_eff == h_wall_days,
+    # identical to the unstretched baseline -- churned-away evidence must not
+    # get a second, redundant reprieve from the wall-clock floor (SPEC C3).
+    cfg = cfg_with()
+    e = cc.Evidence("alice", "core", "AUTHORED", T0, cfg["sat_lines"])
+    e.churn_after = cfg["churn_cap"] * 1000.0  # churn_ratio == churn_cap
+    stretched = cc.score_all(cfg, [e], {"core": 1000.0}, T0 + 180 * DAY)
+    baseline_cfg = cfg_with(quiescence_stretch=0.0)
+    baseline = cc.score_all(baseline_cfg, [e], {"core": 1000.0}, T0 + 180 * DAY)
+    assert abs(stretched[("alice", "core")] - baseline[("alice", "core")]) < 1e-9
 
 
 def test_decay_churn_half_life():

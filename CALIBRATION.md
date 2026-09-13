@@ -7,9 +7,11 @@ that touches a tunable must land as one commit editing the prototype, the
 spec's tunables table, this file, and the regenerated fixtures together (see
 `CLAUDE.md`).
 
-Status values: `OPEN` (observed, not yet decided), `ACCEPTED` (spec + code
-changed), `REJECTED` (considered, not adopted — reasoning kept for the
-record).
+Status values: `OPEN` (observed, not yet decided), `DECIDED` (an experiment
+compared candidate variants and one was adopted — spec + code changed,
+rejected variants and why are kept for the record), `ACCEPTED` (a single
+proposed change was adopted without a multi-variant experiment), `REJECTED`
+(considered, not adopted — reasoning kept for the record).
 
 ---
 
@@ -30,10 +32,127 @@ or replace the fixed floor with a quiescence-scaled floor (e.g. `H_wall`
 grows with a module's own churn rate, so a module that isn't moving doesn't
 force-decay its evidence on time alone).
 
-**Status:** OPEN. Resolution is issue #1 (see `PLAN.md`) — decide via
-controlled experiment (re-run the express clone under 2–3 candidate values,
-or the quiescence-scaled floor, compare resulting maps against RUN-NOTES'
-`A2`/`A3` narratives) before any Kotlin work starts.
+**Status:** DECIDED — quiescence-scaled floor adopted (SPEC §3, §4).
+
+### Experiment (2026-09-13)
+
+**Baseline reproducibility note:** the original express run (RUN-NOTES.md,
+2026-09-13) cited "express @ main (6,169 commits)" with no pinned SHA. For
+this experiment, `expressjs/express` was freshly cloned and pinned at:
+
+```
+SHA:      3ce6d0eb86e9d93529ff3191c6bb5db8ce6e72c8
+Cloned:   2026-09-13
+--as-of:  2026-09-13T00:00:00Z
+```
+
+Note for future reproduction: `prototype/comprehension.py`'s `read_commits`
+uses `git log --all`, which pulls in every ref a clone happens to fetch —
+this pinned clone parsed **6,422** commits via `--all`, not the 6,169 a plain
+`git log --oneline` on the default branch shows. This is the non-determinism
+tracked separately as issue #3 (pin the exact git invocation before Kotlin
+starts); it doesn't change this experiment's conclusion (all three variants
+below were run against the identical commit set), but it means this
+experiment's absolute numbers are not bit-for-bit reproducible against
+RUN-NOTES' original run until #3 lands.
+
+**Three variants**, same config (`prototype/express-config.json`), same
+pinned clone and `--as-of`:
+
+| Variant | `H_wall` | `Q` (quiescence_stretch) |
+|---|---|---|
+| (a) baseline | 180d | 0 (disabled) |
+| (b) flat lengthen | 540d | 0 (disabled) |
+| (c) quiescence-scaled | 180d | 2.0 |
+
+**Module-level result:** identical `status` on every module across all three
+variants (`application`/`middleware`/`response`/`router`/`utils`/`view` stay
+`DARK`; `request` stays `AT_RISK`). Comprehender counts are identical too,
+except `tests`, which moves from 3 comprehenders (baseline) to 8 in both (b)
+and (c) — several historical `tests` authors were being wall-clock-erased
+despite `tests` itself having had comparatively little churn since their
+contributions, the same mechanism working as intended. `tests` stays
+`COVERED` in all three variants, so this is a count change, not a status
+change, and non-critical (`tests` isn't in `express-config.json`'s
+`critical` list). This calibration issue is about whether *evidence scores*
+correctly reflect decayed-but-real standing — it does not, and should not,
+manufacture comprehenders where the underlying evidence classes v0.1 can see
+(authorship) don't support it. That gap is candidate 2 (`REVIEWED`
+evidence), not this one.
+
+**Score-level result — the false-positive fix, and the overcorrection
+check** (Douglas Christopher Wilson, `router` — the exact case RUN-NOTES A1
+cites: git-blame owner, evidence reads as fully decayed):
+
+| Variant | Wilson `router` score | Wilson `application` | Wilson `tests` |
+|---|---|---|---|
+| (a) baseline 180d | 0.0023 | 0.0001 | 0.0238 |
+| (b) flat 540d | 0.1379 | 0.0325 | 1.0 |
+| (c) quiescence Q=2 | 0.1196 | 0.0262 | 1.0 |
+
+Both (b) and (c) fix the false decay (Wilson's `router` evidence goes from
+"reads as erased" to "reads as decayed-but-real"). **Neither overcorrects**
+by the stated criterion: `θ_person = 0.5` and Wilson's `router` score stays
+well below it in both (0.1379, 0.1196) — `router` remains `DARK`, TJ/Wilson-era
+mass does not get revived to comprehender status anywhere it shouldn't.
+`tests` saturates to `1.0` in both (b) and (c) alike (Wilson's historical
+volume there is large enough to hit the saturation cap regardless of which
+wall-clock fix is used), so `tests` doesn't discriminate between the two
+variants — it only confirms neither one is obviously broken.
+
+**Why (c) over (b), given the real-repo numbers alone don't strongly
+discriminate them:** express's modules are almost all currently quiescent
+(RUN-NOTES A2's own diagnosis: "v5 stability means almost no churn"), so on
+*this* dataset a flat 540d floor and a quiescence-scaled floor land close
+together — both largely see low churn_ratio and both stretch close to their
+respective ceilings. That similarity is exactly the blind spot: it means the
+express run alone cannot show what a flat floor does on a module that is
+old *and* still being actively rewritten by others. A synthetic check
+isolates that case directly (single evidence event, 300 days elapsed,
+`H_wall=180`, `Q=2`, module size 1000):
+
+| Scenario | churn_ratio | baseline (180d) | flat 540d | quiescence Q=2 |
+|---|---|---|---|---|
+| frozen (churn_after=0) | 0.0 | 0.315 | 0.6804 | 0.6804 |
+| fully churned-away (churn_after=4000) | 4.0 (=cap) | 0.0197 | 0.0425 | 0.0197 |
+| partially churned (churn_after=2000) | 2.0 | 0.0787 | 0.1701 | 0.1403 |
+
+On the frozen row, (b) and (c) fix the false decay identically — this is
+the case candidate 1 exists to fix, and both variants fix it the same way.
+On the fully-churned-away row, (b) gives that evidence a **2.16× decay
+reprieve it should not get** — the module *has* moved on since, by
+construction (`churn_ratio` is already at `CHURN_CAP`), and a flat,
+unconditional floor lengthening slows its decay anyway, diluting the
+churn-primacy C3 requires. (c) gives it **no reprieve at all**
+(`0.0197 == 0.0197`, exact): at `churn_ratio = CHURN_CAP`, `Q`'s multiplier
+term is exactly zero by construction, so `H_wall_eff` collapses back to the
+plain `H_wall` — quiescence-scaled decay degrades to the un-stretched
+baseline precisely where the module has genuinely moved on. The partial-churn
+row shows this isn't a step function: (c) interpolates the fix
+proportionally to how quiescent the module actually is, where (b) applies
+the same 2.16× multiplier regardless of churn. This is the concrete,
+falsifiable reason to prefer (c): it is at least as good as (b) everywhere
+the express data can check, and strictly better on the case express's
+current quiescence happens to hide.
+
+**Decision:** adopt quiescence-scaled floor, `Q = 2.0`, `H_wall` unchanged
+at 180 days (SPEC §3 formula, §4 table). `H_wall_eff = H_wall * (1 + Q * (1
+- churn_ratio/CHURN_CAP))`. `Q = 0` recovers the original flat floor exactly
+(verified: `test_quiescence_does_not_stretch_fully_churned_evidence`), so no
+existing deployment loses the ability to run the un-stretched model.
+`fixtures/golden-synthetic.json` regenerated under the new default (see
+commit); statuses unchanged, `Bob|web` now saturates to `1.0`,
+`Alice|core`/`Tiare|core` shift upward slightly (`core`'s single
+agent-mediated rewrite event keeps `churn_ratio` well above 0 for Alice's
+earlier evidence, so the stretch here is partial, not maximal — consistent
+with the mechanism, not a special case).
+
+**Flat 540d is not adopted as a fallback or alternative default.** It is
+kept in this record as the comparison baseline that motivated preferring
+the quiescence-scaled mechanism; there is no config value that reproduces
+it exactly other than setting `Q` such that `H_wall*(1+Q) = 540` *and*
+accepting the churned-away-evidence reprieve that comes with it, which is
+the behavior this decision explicitly rejects.
 
 ---
 

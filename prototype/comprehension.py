@@ -25,7 +25,11 @@ from datetime import datetime, timezone
 
 DEFAULTS = {
     "h_churn": 1.0,          # churn_ratio at which evidence halves
-    "h_wall_days": 180.0,    # wall-clock half-life (floor decay)
+    "h_wall_days": 180.0,    # wall-clock half-life (floor decay) at full churn
+    "quiescence_stretch": 2.0,  # stretches h_wall toward h_wall*(1+this) as the
+                                 # module's churn since the evidence -> 0 (CALIBRATION.md
+                                 # candidate 1); 0 recovers the flat, unstretched floor
+
     "churn_cap": 4.0,
     "sat_lines": 400.0,
     "theta_person": 0.5,
@@ -178,7 +182,11 @@ def score_all(cfg: dict, events: list[Evidence], sizes: dict[str, float], as_of:
     for e in events:
         churn_ratio = min(cfg["churn_cap"], e.churn_after / sizes.get(e.module, 1.0))
         days = max(0.0, (as_of - e.timestamp) / 86400.0)
-        eff_age = churn_ratio / cfg["h_churn"] + days / cfg["h_wall_days"]
+        # quiescence-scaled floor (SPEC §3, CALIBRATION.md candidate 1): the
+        # wall-clock half-life stretches toward h_wall*(1+stretch) as churn_ratio
+        # -> 0 (module frozen) and relaxes to the base h_wall as churn_ratio -> churn_cap.
+        h_wall_eff = cfg["h_wall_days"] * (1 + cfg["quiescence_stretch"] * (1 - churn_ratio / cfg["churn_cap"]))
+        eff_age = churn_ratio / cfg["h_churn"] + days / h_wall_eff
         decay = 0.5 ** eff_age
         value = cfg["weights"][e.etype] * min(1.0, math.sqrt(e.magnitude / cfg["sat_lines"]))
         scores[(e.person, e.module)] += value * decay
