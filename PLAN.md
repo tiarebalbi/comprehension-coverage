@@ -145,7 +145,11 @@ test. Project structure ready to receive the scoring engine.
 **Scope:** Port `score_all`, `collect`'s decay/value math, and `build_map`
 from the prototype. Does not include git ingestion (events are
 constructed directly in tests, mirroring
-`test_comprehension.py`'s unit tests) or config loading. Blocked by: #4.
+`test_comprehension.py`'s unit tests) or config loading. Blocked by: #4,
+#13 (`ATTESTED` evidence class unimplemented — must land first so Kotlin
+ports a prototype that actually implements v0.1's declared evidence
+model, rather than faithfully reproducing a spec/prototype gap into the
+reference it's supposed to match).
 
 **Constraints — known A4 landmines, must be replicated exactly:**
 - Module assignment is **first-match-wins** in config declaration order
@@ -374,22 +378,26 @@ rather than calibration questions.
 
 ---
 
-## Backlog — unblocked, non-critical-path for v0.1
+## Backlog — non-critical-path for v0.1 unless noted
 
-These are real gaps but do not block the sequence above. File as separate
-issues when picked up; not sequenced here because nothing else depends on
-them and they don't gate A4.
+File as separate issues when picked up; not sequenced above beyond the
+one exception noted.
 
-- **`ATTESTED` evidence class unimplemented.** SPEC §2 lists it as v0.1
-  scope (`.comprehension/attestations.yaml`), and
+- **`ATTESTED` evidence class unimplemented — issue #13, blocks #5.**
+  SPEC §2 lists it as v0.1 scope (`.comprehension/attestations.yaml`), and
   `DEFAULTS["weights"]["ATTESTED"]` exists, but `collect()` never emits
   `ATTESTED` events — no code reads the attestations file. Unlike
   `REVIEWED` (issue #2, correctly out of scope), this is scope the spec
-  already committed to that the prototype hasn't delivered. Needs its own
-  calibration-adjacent issue: implement attestation-file parsing in the
-  prototype (with its own unit test and a fixture addition), before or
-  after the Kotlin track — doesn't block it either way since Kotlin ports
-  whatever the prototype does at the time it's ported.
+  already committed to that the prototype hasn't delivered. **Correction:**
+  this was originally filed as unblocked/non-critical-path, on the theory
+  that "Kotlin ports whatever the prototype does at the time it's ported"
+  made the timing irrelevant. That's backwards: if this lands *after* #5,
+  Kotlin's core scoring engine faithfully reproduces the gap into the very
+  reference implementation A4 checks it against, baking a known spec
+  violation into the golden fixture. Sequenced as a hard blocker on #5
+  instead: implement attestation-file parsing in the prototype (with its
+  own unit test and a fixture addition) before the scoring engine is
+  ported.
 - **SPEC §5.1 map fields not in prototype output.** Spec requires
   per-module "strongest evidence age" and "agent-mediated share of recent
   churn" in the map output; the prototype's JSON currently emits only
