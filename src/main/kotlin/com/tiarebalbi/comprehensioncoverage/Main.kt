@@ -1,7 +1,7 @@
 package com.tiarebalbi.comprehensioncoverage
 
-fun scaffoldIdentity(): String = "comprehension-coverage kotlin scaffold"
+import kotlin.system.exitProcess
 
-fun main() {
-    println(scaffoldIdentity())
+fun main(args: Array<String>) {
+    exitProcess(runCli(args))
 }
