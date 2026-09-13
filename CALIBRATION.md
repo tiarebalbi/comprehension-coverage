@@ -190,8 +190,11 @@ it's a direct demonstration of why §2.1 exists: `request` was `AT_RISK`
 (1 comprehender) under the old `--all` numbers above; under `HEAD` scoping
 it is **`DARK`** (0 comprehenders) in all three variants. The former sole
 comprehender, Sebastian Beltran, scored `1.0` on `request` under `--all`
-but `0.0693` under `HEAD` (baseline variant, both otherwise identical
-inputs) — his highest-value evidence lived on a commit reachable only from
+but `0.0693` under `HEAD` (current calibrated defaults, Q=2; under the
+un-stretched baseline variant (a) the same flip is 0.6076 → 0.0258 — above
+θ in both cases under `--all`, below in both under `HEAD`, so the status
+flip is robust to the variant choice) — his highest-value evidence lived
+on a commit reachable only from
 a ref outside `HEAD` that the old `--all` invocation happened to pick up
 from the clone. That's exactly the non-determinism §2.1 was written to
 close: which refs a clone happens to have fetched should not change
