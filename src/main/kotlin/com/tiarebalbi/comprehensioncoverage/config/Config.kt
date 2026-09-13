@@ -5,8 +5,10 @@ import com.tiarebalbi.comprehensioncoverage.scoring.EvidenceType
 import com.tiarebalbi.comprehensioncoverage.scoring.ScoringConfig
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.int
@@ -50,6 +52,13 @@ private fun defaultConfigJson(): JsonObject = buildJsonObject {
     putJsonArray("departed") {}
     putJsonObject("modules") {}
     putJsonArray("critical") {}
+    putJsonObject("gate") {
+        // SPEC §5.2: exit 1 when a critical module is AT_RISK, not just
+        // DARK. Off by default -- AT_RISK is a softer signal than DARK and
+        // not every project wants it merge-blocking. PROVISIONAL (SPEC §5).
+        put("exit1_on_at_risk", JsonPrimitive(false))
+    }
+    put("break_glass_person", JsonNull)  // email for --break-glass when not passed on the CLI
 }
 
 private fun shallowMergeObject(base: JsonObject, override: JsonObject): JsonObject {
@@ -79,8 +88,11 @@ private fun mergeUserConfig(defaults: JsonObject, user: JsonObject): JsonObject 
 }
 
 private fun JsonObject.string(key: String): String = getValue(key).jsonPrimitive.content
+private fun JsonObject.stringOrNull(key: String): String? =
+    getValue(key).let { if (it is JsonNull) null else it.jsonPrimitive.content }
 private fun JsonObject.double(key: String): Double = getValue(key).jsonPrimitive.double
 private fun JsonObject.int(key: String): Int = getValue(key).jsonPrimitive.int
+private fun JsonObject.boolean(key: String): Boolean = getValue(key).jsonPrimitive.boolean
 private fun JsonObject.stringList(key: String): List<String> = getValue(key).jsonArray.map { it.jsonPrimitive.content }
 
 private fun JsonObject.stringMap(key: String): Map<String, String> {
@@ -107,6 +119,17 @@ private fun JsonObject.weightsMap(key: String): Map<EvidenceType, Double> {
 }
 
 /**
+ * `--gate`/`--break-glass` knobs (SPEC §5.2). `exit1OnAtRisk` is
+ * PROVISIONAL, off by default. `breakGlassPerson` is the config fallback
+ * for `--break-glass-person`; both absent is an error once break-glass is
+ * actually invoked (never inferred from git's `user.email`).
+ */
+data class GateConfig(
+    val exit1OnAtRisk: Boolean = false,
+    val breakGlassPerson: String? = null,
+)
+
+/**
  * Both configs the rest of the engine consumes, built from one loaded and
  * merged JSON config -- a single entry point so a future CLI (#8) never
  * constructs [ScoringConfig] and [IngestConfig] separately and risks them
@@ -115,8 +138,9 @@ private fun JsonObject.weightsMap(key: String): Map<EvidenceType, Double> {
 data class LoadedConfig(
     val scoring: ScoringConfig,
     val ingest: IngestConfig,
-    /** Module names gated in `--gate` mode (SPEC §5) -- not consumed by this engine yet; carried for #9. */
+    /** Module names gated in `--gate` mode (SPEC §5). */
     val critical: List<String>,
+    val gate: GateConfig,
 )
 
 /**
@@ -151,5 +175,9 @@ fun loadConfig(path: String): LoadedConfig {
         modules = modules,
         satLines = satLines,
     )
-    return LoadedConfig(scoring, ingest, cfg.stringList("critical"))
+    val gate = GateConfig(
+        exit1OnAtRisk = cfg.getValue("gate").jsonObject.boolean("exit1_on_at_risk"),
+        breakGlassPerson = cfg.stringOrNull("break_glass_person"),
+    )
+    return LoadedConfig(scoring, ingest, cfg.stringList("critical"), gate)
 }

@@ -47,6 +47,13 @@ DEFAULTS = {
     "departed": [],           # canonical names excluded from current counts
     "modules": {},            # module name -> list of path globs
     "critical": [],           # module names gated in --gate mode
+    "gate": {
+        # SPEC §5.2: exit 1 when a critical module is AT_RISK, not just
+        # DARK. Off by default -- AT_RISK is a softer signal than DARK and
+        # not every project wants it merge-blocking. PROVISIONAL (SPEC §5).
+        "exit1_on_at_risk": False,
+    },
+    "break_glass_person": None,  # email for --break-glass when not passed on the CLI
 }
 
 
@@ -65,6 +72,12 @@ def parse_as_of(s: str, label: str = "--as-of") -> int:
             "e.g. '2026-09-13T00:00:00Z'."
         )
     return int(dt.timestamp())
+
+
+def format_iso(ts: int) -> str:
+    """Inverse of `parse_as_of` for a UTC unix timestamp -- used to stamp the
+    break-glass attestation stub from `as_of` (C6: never the wall clock)."""
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def load_config(path: str) -> dict:
@@ -148,6 +161,14 @@ def read_attestations(repo: str, cfg: dict) -> list[tuple[str, str, int]]:
 
     Any real YAML document following this exact shape parses identically
     under a full YAML parser, so adopting one later is not a format break.
+
+    A record may also carry a `type` field (SPEC §2): its absence means
+    `ATTESTED`, the only type this reader ingests in v0.1. A `type` naming a
+    reserved-not-implemented class (e.g. `INCIDENT_DIAGNOSED`, written by
+    `--break-glass`) is a legitimate record, not a malformed one -- it is
+    skipped with a stderr warning rather than folded into evidence, exactly
+    like `REVIEWED`'s declared-interface status (SPEC §2). This is what
+    keeps a break-glass stub from silently manufacturing comprehension.
     """
     path = os.path.join(repo, ".comprehension", "attestations.yaml")
     if not os.path.isfile(path):
@@ -180,6 +201,12 @@ def read_attestations(repo: str, cfg: dict) -> list[tuple[str, str, int]]:
         for required in ("email", "module", "timestamp"):
             if required not in rec:
                 raise ValueError(f"attestations.yaml: record missing {required!r}: {rec}")
+        rec_type = rec.get("type", "ATTESTED")
+        if rec_type != "ATTESTED":
+            print(f"comprehension: attestations.yaml: skipping reserved "
+                  f"evidence class {rec_type!r} (declared interface, not "
+                  f"ingested in v0.1): {rec}", file=sys.stderr)
+            continue
         if rec["module"] not in cfg["modules"]:
             # A subset-module config is a legitimate run mode, so this is a
             # skip, not an error -- but silent drops are how real data goes
@@ -359,6 +386,134 @@ def render(modules: dict, show_individuals: bool) -> str:
     return "\n".join(out)
 
 
+def remediation_text(mod: str, modules: dict, events: list[Evidence], as_of: int) -> str:
+    """SPEC §5.2: "who last held evidence, how it decayed" for one failing
+    critical module. `person` is the strongest current scorer for the
+    module (`modules[mod]["people"]` is already sorted desc by score, SPEC
+    §3) -- not necessarily the module's sole comprehender, since this same
+    text covers both the DARK and the (configurable) AT_RISK exit path. No
+    numeric score is printed: C5 reserves per-person scalars for
+    `--show-individuals`; naming *who* is what §5.2 itself requires, under
+    C5's own "explicit flag, team-local use" carve-out for `--gate`.
+
+    "Last" is the event with the greatest `(timestamp, kind)`, `kind`
+    breaking a same-instant tie the same way `collect()`'s action stream
+    orders it (commits before attestations) -- computed explicitly rather
+    than relied on from `events`' list position, which happens to already
+    be chronological but isn't a contract this function should depend on.
+    """
+    people = modules.get(mod, {}).get("people", [])
+    if not people:
+        return f"  {mod}: no evidence recorded for this module."
+    person = people[0][0]
+    candidates = [e for e in events if e.module == mod and e.person == person]
+    if not candidates:
+        return f"  {mod}: {person} holds the strongest remaining score, but no contributing event was found."
+    last = max(candidates, key=lambda e: (e.timestamp, 1 if e.etype == "ATTESTED" else 0))
+    days = (as_of - last.timestamp) // 86400
+    return (f"  {mod}: {person} holds the strongest remaining evidence; "
+            f"last {last.etype} evidence {days}d before as-of.")
+
+
+def write_break_glass_stub(repo: str, modules: list[str], person: str,
+                            incident_ref: str, as_of: int) -> None:
+    """SPEC §5.2 break-glass: appends one `INCIDENT_DIAGNOSED`-class stub
+    record per overridden critical module to `.comprehension/attestations.yaml`,
+    in the schema §2 defines plus `type`/`incident_ref`. Timestamped from
+    `as_of` -- the resolved as-of instant, never the wall clock (C6).
+
+    This is a declared interface, not an implemented one (SPEC §2):
+    `read_attestations` skips `type: INCIDENT_DIAGNOSED` records rather than
+    scoring them, so break-glass records that an override happened without
+    manufacturing comprehension by itself.
+    """
+    dir_path = os.path.join(repo, ".comprehension")
+    os.makedirs(dir_path, exist_ok=True)
+    path = os.path.join(dir_path, "attestations.yaml")
+    existing = ""
+    if os.path.isfile(path):
+        with open(path) as f:
+            existing = f.read()
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    iso = format_iso(as_of)
+    blocks = "".join(
+        f"- email: {person}\n"
+        f"  module: {mod}\n"
+        f'  timestamp: "{iso}"\n'
+        f"  type: INCIDENT_DIAGNOSED\n"
+        f'  incident_ref: "{incident_ref}"\n'
+        for mod in modules
+    )
+    with open(path, "w") as f:
+        f.write(existing + blocks)
+
+
+def run_gate(cfg: dict, repo: str, modules: dict, events: list[Evidence], as_of: int,
+             break_glass: str | None, break_glass_person: str | None) -> tuple[int, str]:
+    """Evaluates `--gate`/`--break-glass` (SPEC §5.2) against an
+    already-built map. Returns `(exit_code, message)` -- `message` is `""`
+    when `exit_code` is 0 (no `\\n`-prefix, no trailing text). Split out of
+    `main()` so it's directly testable, the same way `build_map`/`score_all`
+    are, without going through argparse or a real git subprocess.
+
+    Raises `ValueError` if `break_glass` is set on a failing gate but no
+    person is resolvable -- `main()` turns that into `sys.exit`.
+    """
+    dark = [m for m in cfg["critical"] if modules.get(m, {}).get("status") == "DARK"]
+    at_risk = []
+    if cfg.get("gate", {}).get("exit1_on_at_risk", False):
+        at_risk = [m for m in cfg["critical"] if modules.get(m, {}).get("status") == "AT_RISK"]
+    failing = dark + at_risk
+    exit_code = 2 if dark else (1 if at_risk else 0)
+    if exit_code == 0:
+        return 0, ""
+
+    def clean(s):
+        # A blank string (from an explicitly-empty CLI flag or a blank
+        # config value) must resolve the same as "not provided" -- never
+        # silently accepted as a real person.
+        return s.strip() if s and s.strip() else None
+
+    person = None
+    if break_glass:
+        # break-glass only means something once there's a red exit to
+        # downgrade -- a passing gate with --break-glass set is a no-op,
+        # not an error, and doesn't demand a --break-glass-person (handled
+        # above: exit_code == 0 already returned).
+        person = clean(break_glass_person) or clean(cfg.get("break_glass_person"))
+        if not person:
+            raise ValueError(
+                "--break-glass requires --break-glass-person (or config "
+                "'break_glass_person'): who is invoking this override? "
+                "(never inferred from git config user.email)"
+            )
+
+    lines = []
+    if dark:
+        lines.append(f"GATE: DARK critical module(s): {', '.join(dark)} — "
+                      f"an agent change here cannot merge without re-establishing comprehension.")
+    if at_risk:
+        lines.append(f"GATE: AT_RISK critical module(s): {', '.join(at_risk)} — "
+                      f"comprehension exists but is below the bus-factor threshold "
+                      f"(theta_covered={cfg['theta_covered']}).")
+    for m in failing:
+        lines.append(remediation_text(m, modules, events, as_of))
+    message = "\n".join(lines)
+
+    if break_glass:
+        # Explicit single quotes, not `!r`: `repr()` switches to double
+        # quotes (and escapes backslashes) for strings containing a `'`,
+        # which the Kotlin port's plain `'$breakGlass'` wrap does not --
+        # this keeps the two byte-identical for every incident-ref input,
+        # not just the ASCII-safe ones exercised by tests.
+        message += (f"\n\nBREAK-GLASS: '{break_glass}' — gate override by {person}; "
+                     f"writing INCIDENT_DIAGNOSED stub(s) for: {', '.join(failing)}.")
+        write_break_glass_stub(repo, failing, person, break_glass, as_of)
+        return 0, message
+    return exit_code, message
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True)
@@ -366,8 +521,18 @@ def main() -> int:
     ap.add_argument("--as-of", default=None)
     ap.add_argument("--json", default=None)
     ap.add_argument("--gate", action="store_true")
+    ap.add_argument("--break-glass", default=None, metavar="INCIDENT_REF")
+    ap.add_argument("--break-glass-person", default=None, metavar="EMAIL")
     ap.add_argument("--show-individuals", action="store_true")
     a = ap.parse_args()
+
+    if a.break_glass is not None:
+        if not a.gate:
+            sys.exit("--break-glass requires --gate")
+        if not a.break_glass.strip():
+            sys.exit("--break-glass requires a non-empty incident ref")
+    if a.break_glass_person is not None and not a.break_glass_person.strip():
+        sys.exit("--break-glass-person requires a non-empty email")
 
     cfg = load_config(a.config)
     if a.as_of:
@@ -394,11 +559,14 @@ def main() -> int:
             json.dump({"as_of": as_of, "modules": public}, f, indent=2, sort_keys=True)
 
     if a.gate:
-        dark = [m for m in cfg["critical"] if modules.get(m, {}).get("status") == "DARK"]
-        if dark:
-            print(f"\nGATE: DARK critical module(s): {', '.join(dark)} — "
-                  f"an agent change here cannot merge without re-establishing comprehension.")
-            return 2
+        try:
+            exit_code, message = run_gate(cfg, a.repo, modules, events, as_of,
+                                           a.break_glass, a.break_glass_person)
+        except ValueError as e:
+            sys.exit(str(e))
+        if message:
+            print(f"\n{message}")
+        return exit_code
     return 0
 
 

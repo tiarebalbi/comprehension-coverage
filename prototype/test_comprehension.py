@@ -191,12 +191,17 @@ def test_attested_weight_applied():
 # ---------------------------------------------------------------- attestations (issue #13)
 
 def write_attestations(repo, records):
+    """Writes records in dict-insertion order, quoting `timestamp` and
+    `incident_ref` (matching the schema and the break-glass stub) and
+    leaving other keys bare -- so a record can carry `type`/`incident_ref`
+    (SPEC §2 reserved-class fields) beyond the three required keys."""
+    quoted = {"timestamp", "incident_ref"}
     os.makedirs(f"{repo}/.comprehension", exist_ok=True)
     lines = []
     for r in records:
-        lines.append(f'- email: {r["email"]}')
-        lines.append(f'  module: {r["module"]}')
-        lines.append(f'  timestamp: "{r["timestamp"]}"')
+        for i, (k, v) in enumerate(r.items()):
+            prefix = "- " if i == 0 else "  "
+            lines.append(f'{prefix}{k}: "{v}"' if k in quoted else f"{prefix}{k}: {v}")
     with open(f"{repo}/.comprehension/attestations.yaml", "w") as f:
         f.write("\n".join(lines) + "\n")
 
@@ -377,6 +382,280 @@ def test_golden_fixture():
         with open(out, "w") as f:
             json.dump(fixture, f, indent=2, sort_keys=True)
         print("golden fixture written:", os.path.abspath(out))
+    finally:
+        shutil.rmtree(tmp)
+
+
+# ---------------------------------------------------------------- gate / break-glass (SPEC §5.2, issue #9)
+
+def gate_cfg(**over):
+    cfg = cfg_with(critical=["core", "web"])
+    cfg.update(over)
+    return cfg
+
+
+def run_cli(repo, config_path, *extra_args):
+    """Invokes the real CLI entry point via subprocess -- for the argument-
+    validation paths that live in main() itself (before run_gate is ever
+    called), which unit tests of run_gate() can't reach."""
+    script = os.path.join(os.path.dirname(__file__), "comprehension.py")
+    result = subprocess.run(
+        ["python3", script, "--repo", repo, "--config", config_path, *extra_args],
+        capture_output=True, text=True,
+    )
+    return result.returncode, result.stdout, result.stderr
+
+
+def test_cli_break_glass_without_gate_exits_1():
+    tmp = tempfile.mkdtemp()
+    try:
+        build_synthetic_repo(tmp)
+        cfg_path = os.path.join(tmp, "cfg.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"modules": {"core": ["src/core/*"], "web": ["src/web/*"]}}, f)
+        rc, _, err = run_cli(tmp, cfg_path, "--break-glass", "INC-1")
+        assert rc == 1, (rc, err)
+        assert "--gate" in err
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_cli_break_glass_blank_ref_exits_1_not_0():
+    # The bug this guards: a blank --break-glass must never be silently
+    # accepted (which would downgrade a red gate to green with no
+    # incident ref on record).
+    tmp = tempfile.mkdtemp()
+    try:
+        build_synthetic_repo(tmp)
+        cfg_path = os.path.join(tmp, "cfg.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"modules": {"core": ["src/core/*"], "web": ["src/web/*"]},
+                       "critical": ["core"]}, f)
+        rc, _, err = run_cli(tmp, cfg_path, "--gate", "--break-glass", "")
+        assert rc == 1, (rc, err)
+        assert "non-empty incident ref" in err
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_cli_break_glass_person_blank_exits_1():
+    tmp = tempfile.mkdtemp()
+    try:
+        build_synthetic_repo(tmp)
+        cfg_path = os.path.join(tmp, "cfg.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"modules": {"core": ["src/core/*"], "web": ["src/web/*"]},
+                       "critical": ["core"]}, f)
+        rc, _, err = run_cli(tmp, cfg_path, "--gate", "--break-glass", "INC-1",
+                              "--break-glass-person", "  ")
+        assert rc == 1, (rc, err)
+        assert "non-empty email" in err
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_run_gate_passes_when_nothing_critical_fails():
+    cfg = gate_cfg()
+    modules = {"core": {"status": "COVERED", "comprehenders": 2, "people": []},
+               "web": {"status": "COVERED", "comprehenders": 2, "people": []}}
+    result = cc.run_gate(cfg, "/nonexistent", modules, [], T0, None, None)
+    assert result == (0, "")
+
+
+def test_run_gate_exits_2_on_dark_critical():
+    cfg = gate_cfg()
+    modules = {"core": {"status": "DARK", "comprehenders": 0, "people": [("Alice", 0.12)]},
+               "web": {"status": "COVERED", "comprehenders": 2, "people": []}}
+    events = [cc.Evidence("Alice", "core", "AUTHORED", T0, 400.0)]
+    exit_code, message = cc.run_gate(cfg, "/nonexistent", modules, events, T0 + 200 * DAY, None, None)
+    assert exit_code == 2
+    assert "GATE: DARK critical module(s): core" in message
+    assert "Alice holds the strongest remaining evidence; last AUTHORED evidence 200d before as-of." in message
+    assert "0.12" not in message  # C5: no per-person scalar in gate output
+
+
+def test_run_gate_at_risk_does_not_exit_by_default():
+    cfg = gate_cfg()  # gate.exit1_on_at_risk defaults to False
+    modules = {"core": {"status": "AT_RISK", "comprehenders": 1, "people": [("Bob", 0.7)]},
+               "web": {"status": "COVERED", "comprehenders": 2, "people": []}}
+    result = cc.run_gate(cfg, "/nonexistent", modules, [], T0, None, None)
+    assert result == (0, "")
+
+
+def test_run_gate_exits_1_on_at_risk_when_enabled():
+    cfg = gate_cfg(gate={"exit1_on_at_risk": True})
+    modules = {"core": {"status": "AT_RISK", "comprehenders": 1, "people": [("Bob", 0.7)]},
+               "web": {"status": "COVERED", "comprehenders": 2, "people": []}}
+    events = [cc.Evidence("Bob", "core", "AUTHORED", T0, 400.0)]
+    exit_code, message = cc.run_gate(cfg, "/nonexistent", modules, events, T0 + 50 * DAY, None, None)
+    assert exit_code == 1
+    assert message == (
+        "GATE: AT_RISK critical module(s): core — comprehension exists but is below "
+        "the bus-factor threshold (theta_covered=2).\n"
+        "  core: Bob holds the strongest remaining evidence; last AUTHORED evidence 50d before as-of."
+    ), message
+
+
+def test_run_gate_no_evidence_recorded_message():
+    cfg = gate_cfg()
+    modules = {"core": {"status": "DARK", "comprehenders": 0, "people": []},
+               "web": {"status": "COVERED", "comprehenders": 2, "people": []}}
+    _, message = cc.run_gate(cfg, "/nonexistent", modules, [], T0, None, None)
+    assert "core: no evidence recorded for this module." in message
+
+
+def test_run_gate_remediation_breaks_same_timestamp_tie_by_kind():
+    # Alice has an AUTHORED event and an ATTESTED event at the exact same
+    # timestamp -- "last" must resolve deterministically via the (timestamp,
+    # kind) rank collect() itself uses (commits before attestations), not
+    # whichever happens to sit later in the events list.
+    cfg = gate_cfg()
+    modules = {"core": {"status": "DARK", "comprehenders": 0, "people": [("Alice", 0.1)]},
+               "web": {"status": "COVERED", "comprehenders": 2, "people": []}}
+    events = [
+        cc.Evidence("Alice", "core", "ATTESTED", T0, cfg["sat_lines"]),
+        cc.Evidence("Alice", "core", "AUTHORED", T0, 400.0),
+    ]
+    _, message = cc.run_gate(cfg, "/nonexistent", modules, events, T0 + 10 * DAY, None, None)
+    assert "last ATTESTED evidence" in message
+
+
+def test_run_gate_break_glass_requires_person():
+    cfg = gate_cfg()
+    modules = {"core": {"status": "DARK", "comprehenders": 0, "people": []},
+               "web": {"status": "COVERED", "comprehenders": 2, "people": []}}
+    try:
+        cc.run_gate(cfg, "/nonexistent", modules, [], T0, "INC-1", None)
+        assert False, "expected ValueError: break-glass with no resolvable person"
+    except ValueError as e:
+        assert "break-glass-person" in str(e)
+
+
+def test_run_gate_break_glass_blank_person_falls_through_to_config_then_errors():
+    # A blank string (CLI or config) must resolve the same as "not
+    # provided" -- never silently accepted as a real person.
+    tmp = tempfile.mkdtemp()
+    try:
+        cfg = gate_cfg()
+        modules = {"core": {"status": "DARK", "comprehenders": 0, "people": []},
+                   "web": {"status": "COVERED", "comprehenders": 2, "people": []}}
+        try:
+            cc.run_gate(cfg, tmp, modules, [], T0, "INC-1", "   ")
+            assert False, "expected ValueError: blank --break-glass-person is not a person"
+        except ValueError as e:
+            assert "break-glass-person" in str(e)
+
+        cfg2 = gate_cfg(break_glass_person="oncall@example.com")
+        exit_code, message = cc.run_gate(cfg2, tmp, modules, [], T0, "INC-1", "   ")
+        assert exit_code == 0 and "oncall@example.com" in message  # blank CLI value falls through to config
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_format_iso_matches_the_schema_example():
+    # 2026-09-08T00:00:00Z, the exact instant used throughout attestations fixtures.
+    assert cc.format_iso(1788825600) == "2026-09-08T00:00:00Z"
+
+
+def test_run_gate_break_glass_downgrades_exit_and_writes_stub():
+    tmp = tempfile.mkdtemp()
+    try:
+        cfg = gate_cfg()
+        modules = {"core": {"status": "DARK", "comprehenders": 0, "people": [("Alice", 0.1)]},
+                   "web": {"status": "COVERED", "comprehenders": 2, "people": []}}
+        events = [cc.Evidence("Alice", "core", "AUTHORED", T0, 400.0)]
+        as_of = T0 + 200 * DAY
+        exit_code, message = cc.run_gate(cfg, tmp, modules, events, as_of,
+                                          "INC-42", "oncall@example.com")
+        assert exit_code == 0
+        assert "BREAK-GLASS: 'INC-42'" in message and "oncall@example.com" in message
+
+        with open(f"{tmp}/.comprehension/attestations.yaml") as f:
+            content = f.read()
+        expected = (
+            "- email: oncall@example.com\n"
+            "  module: core\n"
+            f'  timestamp: "{cc.format_iso(as_of)}"\n'
+            "  type: INCIDENT_DIAGNOSED\n"
+            '  incident_ref: "INC-42"\n'
+        )
+        assert content == expected, content
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_run_gate_break_glass_appends_without_losing_a_missing_trailing_newline():
+    tmp = tempfile.mkdtemp()
+    try:
+        os.makedirs(f"{tmp}/.comprehension")
+        with open(f"{tmp}/.comprehension/attestations.yaml", "w") as f:
+            f.write('- email: dana@example.com\n  module: web\n  timestamp: "2026-09-08T00:00:00Z"')  # no trailing \n
+        cfg = gate_cfg()
+        modules = {"core": {"status": "DARK", "comprehenders": 0, "people": []},
+                   "web": {"status": "COVERED", "comprehenders": 2, "people": []}}
+        as_of = T0
+        cc.run_gate(cfg, tmp, modules, [], as_of, "INC-7", "oncall@example.com")
+        with open(f"{tmp}/.comprehension/attestations.yaml") as f:
+            content = f.read()
+        expected = (
+            '- email: dana@example.com\n  module: web\n  timestamp: "2026-09-08T00:00:00Z"\n'
+            "- email: oncall@example.com\n"
+            "  module: core\n"
+            f'  timestamp: "{cc.format_iso(as_of)}"\n'
+            "  type: INCIDENT_DIAGNOSED\n"
+            '  incident_ref: "INC-7"\n'
+        )
+        assert content == expected, content
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_read_attestations_skips_reserved_type_with_warning():
+    tmp = tempfile.mkdtemp()
+    try:
+        cfg = cfg_with()
+        write_attestations(tmp, [
+            {"email": "oncall@example.com", "module": "core",
+             "timestamp": "2026-09-08T00:00:00Z",
+             "type": "INCIDENT_DIAGNOSED", "incident_ref": "INC-7"},
+        ])
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = cc.read_attestations(tmp, cfg)
+        assert result == []
+        warning = stderr.getvalue()
+        assert "INCIDENT_DIAGNOSED" in warning and "reserved" in warning, warning
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_break_glass_stub_does_not_manufacture_comprehension():
+    # Constraint: a break-glass stub records that the override happened but
+    # must not, by itself, feed the score (SPEC §2: declared interface, not
+    # ingested). Run the full pipeline before and after break-glass writes
+    # the stub and assert the scores are byte-identical.
+    tmp = tempfile.mkdtemp()
+    try:
+        build_synthetic_repo(tmp)
+        cfg = cfg_with(critical=["core"])
+        commits = cc.read_commits(tmp)
+        as_of = T0 + 330 * DAY
+
+        def run():
+            attestations = cc.read_attestations(tmp, cfg)
+            events, sizes = cc.collect(cfg, commits, as_of, attestations)
+            return cc.score_all(cfg, events, sizes, as_of), events, sizes
+
+        scores_before, events_before, sizes_before = run()
+        modules = cc.build_map(cfg, scores_before, sizes_before)
+        assert modules["core"]["status"] == "DARK", modules["core"]  # same as the golden fixture
+
+        exit_code, _ = cc.run_gate(cfg, tmp, modules, events_before, as_of,
+                                    "INC-99", "oncall@example.com")
+        assert exit_code == 0
+
+        scores_after, _, _ = run()
+        assert scores_after == scores_before
     finally:
         shutil.rmtree(tmp)
 

@@ -136,6 +136,15 @@ order — an attestor's git identity and attestation identity must resolve
 to the same person, not fork into two); (3) the raw `email` string, only
 if that email never appears in the repository's history at all.
 
+A record may also carry a `type` field. Its absence means `ATTESTED` —
+the only type the reader ingests in v0.1. A `type` naming one of this
+section's reserved-not-implemented classes (`REVIEWED`,
+`INCIDENT_DIAGNOSED`, `ADR_AUTHORED`) is a *legitimate* record, not a
+malformed one: the reader recognizes it, skips it with a stderr warning,
+and does not fold it into `collect()`'s evidence stream. This is what lets
+`--break-glass` (§5) append an `INCIDENT_DIAGNOSED` stub without that stub
+silently scoring as if it were `ATTESTED`.
+
 ### 2.1 Evidence extraction: git invocation contract
 
 C6 requires "same repository state + same config = same map, bit for bit."
@@ -235,11 +244,54 @@ implementation ships whatever this table says at tag time.
 1. **Map** (default): per module — status, comprehender count, strongest
    evidence age, agent-mediated share of recent churn. Console + JSON.
 2. **Gate** (`--gate`): exit 2 if any module listed in `critical:` is `DARK`;
-   exit 1 if any critical module `AT_RISK` (configurable); print the failing
-   modules with remediation text (who last held evidence, how it decayed).
-   Break-glass: `--break-glass "<incident-ref>"` converts a red exit into a
-   warning AND writes an `INCIDENT_DIAGNOSED`-class attestation stub for the
-   invoking person — the escape hatch that feeds the map.
+   exit 1 if any critical module is `AT_RISK` **and** `gate.exit1_on_at_risk`
+   is `true` (default `false`; PROVISIONAL — no driving run yet, unlike the
+   §4 tunables); 0 otherwise. Prints the failing modules with remediation
+   text: the module's strongest current scorer (its `people` entry, already
+   sorted desc by score, whether or not they clear `theta_person`) and the
+   type/age of that person's most recent contributing evidence event, e.g.
+   `core: Alice holds the strongest remaining evidence; last AUTHORED
+   evidence 214d before as-of.` Naming a person here is per-person data
+   (C5) admitted under C5's own carve-out — `--gate` is an explicit,
+   opt-in, team-local (CI merge-gate) flag, not the default map output —
+   but the *scalar* score is still withheld; only `--show-individuals`
+   exposes that. A module with no evidence ever recorded prints `{module}:
+   no evidence recorded for this module.` instead. Age is whole days
+   (integer floor of `(as_of - event_timestamp) / 86400`), not a
+   wall-clock read (C6); a same-instant tie between an event's type is
+   broken by picking the commit-derived event (`AUTHORED`/`AGENT_MEDIATED`)
+   before an `ATTESTED` one, matching §2.1's action-stream order.
+
+   Break-glass: `--break-glass "<incident-ref>"` (requires `--gate`) converts
+   a nonzero gate exit into exit 0, together with a printed warning, and
+   requires an explicit invoking person — `--break-glass-person <email>` or
+   config `break_glass_person`; never inferred from git's `user.email`
+   (determinism, C6, and honesty about who authorized the override). It then
+   appends one record per overridden critical module to
+   `.comprehension/attestations.yaml`, in the schema §2 defines plus two
+   fields:
+
+   ```yaml
+   - email: oncall@example.com
+     module: core
+     timestamp: "2026-09-13T00:00:00Z"
+     type: INCIDENT_DIAGNOSED
+     incident_ref: "INC-42"
+   ```
+
+   `<incident-ref>` should avoid `#`: the reader's line parser treats `#`
+   as a comment marker even inside a quoted value (a pre-existing limit of
+   the hand-rolled reader, §2, not new here) and would silently truncate a
+   ref containing one on the next read-back.
+
+   `timestamp` is the resolved `as_of` instant, never the wall clock (C6).
+   Per §2, `type: INCIDENT_DIAGNOSED` is a declared-interface, not-ingested
+   evidence class: the reader recognizes and skips it (with a warning), so
+   the record documents that the override happened without itself feeding
+   a score — the "escape hatch feeds the map" claim in the essay is about
+   the record's existence as an audit trail, not about the record scoring
+   on the next run. A future `INCIDENT_DIAGNOSED` ingestion is a separate,
+   deliberate change, exactly like `REVIEWED`.
 3. **Individual view** (`--show-individuals`): per-person scores. Never the
    default; C5.
 
