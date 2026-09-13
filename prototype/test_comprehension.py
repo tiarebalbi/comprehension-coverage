@@ -9,11 +9,16 @@ import os
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 
 import comprehension as cc
 
 DAY = 86400
 T0 = 1700000000  # fixed epoch base for determinism
+
+
+def _iso(ts: int) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def cfg_with(**over):
@@ -172,6 +177,95 @@ def test_read_commits_ties_broken_by_sha():
         shutil.rmtree(tmp)
 
 
+def test_attested_weight_applied():
+    # weight(ATTESTED)=0.6, magnitude fixed at sat_lines (fully saturated):
+    # same timestamp as as_of -> no decay -> score == weight exactly.
+    cfg = cfg_with()
+    e = cc.Evidence("dana", "core", "ATTESTED", T0, cfg["sat_lines"])
+    scores = cc.score_all(cfg, [e], {"core": 1000.0}, T0)
+    assert abs(scores[("dana", "core")] - cfg["weights"]["ATTESTED"]) < 1e-9
+
+
+# ---------------------------------------------------------------- attestations (issue #13)
+
+def write_attestations(repo, records):
+    os.makedirs(f"{repo}/.comprehension", exist_ok=True)
+    lines = []
+    for r in records:
+        lines.append(f'- email: {r["email"]}')
+        lines.append(f'  module: {r["module"]}')
+        lines.append(f'  timestamp: "{r["timestamp"]}"')
+    with open(f"{repo}/.comprehension/attestations.yaml", "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def test_read_attestations_missing_file_returns_empty():
+    tmp = tempfile.mkdtemp()
+    try:
+        cfg = cfg_with()
+        assert cc.read_attestations(tmp, cfg) == []
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_read_attestations_parses_and_resolves_identity():
+    tmp = tempfile.mkdtemp()
+    try:
+        cfg = cfg_with(identity={"dana@example.com": "Dana"})
+        write_attestations(tmp, [
+            {"email": "dana@example.com", "module": "core",
+             "timestamp": "2026-09-08T00:00:00Z"},
+        ])
+        attestations = cc.read_attestations(tmp, cfg)
+        assert attestations == [("Dana", "core", 1788825600)]
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_read_attestations_rejects_tz_naive_timestamp():
+    tmp = tempfile.mkdtemp()
+    try:
+        cfg = cfg_with()
+        write_attestations(tmp, [
+            {"email": "dana@example.com", "module": "core",
+             "timestamp": "2026-09-08T00:00:00"},  # no offset
+        ])
+        try:
+            cc.read_attestations(tmp, cfg)
+            assert False, "expected ValueError for tz-naive attestation timestamp"
+        except ValueError:
+            pass
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_read_attestations_skips_unknown_module():
+    tmp = tempfile.mkdtemp()
+    try:
+        cfg = cfg_with()
+        write_attestations(tmp, [
+            {"email": "dana@example.com", "module": "nonexistent",
+             "timestamp": "2026-09-08T00:00:00Z"},
+        ])
+        assert cc.read_attestations(tmp, cfg) == []
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_collect_folds_attestations_without_adding_churn():
+    # An attestation must not itself count as churn for other evidence's
+    # churn_after -- it's a self-report, not a code change.
+    cfg = cfg_with()
+    c = cc.Commit("x", "Alice", "alice@example.com", T0, [], [(400, 0, "src/core/e.txt")])
+    attestations = [("Dana", "core", T0 + 10 * DAY)]
+    events, sizes = cc.collect(cfg, [c], T0 + 20 * DAY, attestations)
+    alice_ev = next(e for e in events if e.person == "Alice")
+    assert alice_ev.churn_after == 0.0  # Dana's attestation contributed no lines
+    dana_ev = next(e for e in events if e.etype == "ATTESTED")
+    assert dana_ev.person == "Dana" and dana_ev.module == "core"
+    assert dana_ev.magnitude == cfg["sat_lines"]
+
+
 # ---------------------------------------------------------------- golden test
 
 def git(repo, *args, env=None):
@@ -190,7 +284,9 @@ def commit(repo, name, email, ts, message):
 
 def build_synthetic_repo(root):
     """Deterministic history: alice hand-builds core early; an agent-mediated
-    rewrite churns core later; bob hand-works web recently."""
+    rewrite churns core later; bob hand-works web recently; dana attests to
+    having re-walked web shortly before as-of, with no git evidence at all
+    (issue #13: exercises ATTESTED, the third v0.1 evidence class)."""
     os.makedirs(f"{root}/src/core", exist_ok=True)
     os.makedirs(f"{root}/src/web", exist_ok=True)
     git(root, "init", "-q", "-b", "main")
@@ -209,24 +305,35 @@ def build_synthetic_repo(root):
     with open(f"{root}/src/web/app.txt", "a") as f:
         f.write("more\n" * 150)
     commit(root, "Bob", "bob@example.com", T0 + 320 * DAY, "web: feature by hand")
+    # read_attestations reads straight off disk (not via git history), so no
+    # commit is needed for this file to be picked up.
+    write_attestations(root, [
+        {"email": "dana@example.com", "module": "web",
+         "timestamp": _iso(T0 + 325 * DAY)},
+    ])
 
 
 def test_golden_fixture():
     tmp = tempfile.mkdtemp()
     try:
         build_synthetic_repo(tmp)
-        cfg = cfg_with()
+        # identity map resolves dana's attestation (email-only) to a display
+        # name, exactly as it would for any real config (SPEC §2 identity merge).
+        cfg = cfg_with(identity={"dana@example.com": "Dana"})
         commits = cc.read_commits(tmp)
+        attestations = cc.read_attestations(tmp, cfg)
         as_of = T0 + 330 * DAY
-        events, sizes = cc.collect(cfg, commits, as_of)
+        events, sizes = cc.collect(cfg, commits, as_of, attestations)
         scores = cc.score_all(cfg, events, sizes, as_of)
         modules = cc.build_map(cfg, scores, sizes)
 
         # web: bob authored recently by hand, but is he above theta after decay?
         # core: alice's evidence is old AND churned by the agent rewrite;
         #        tiare's evidence is recent but agent-discounted.
+        # dana (web) holds ATTESTED-only evidence -- no git history at all.
         assert modules["core"]["status"] == "DARK", modules["core"]
         assert modules["web"]["status"] in ("AT_RISK", "COVERED"), modules["web"]
+        assert ("Dana", "web") in scores, "attestation-only evidence should still produce a score"
 
         # write the golden fixture the Kotlin implementation must reproduce
         public = {m: {k: v for k, v in d.items() if k != "people"}

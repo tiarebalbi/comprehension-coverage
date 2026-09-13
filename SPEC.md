@@ -113,6 +113,24 @@ under-detects agent code in repos with poor hygiene (see §6 limits).
 listed in config and excluded from *current* comprehender counts while retained
 in history.
 
+**`ATTESTED` file schema and magnitude convention:** `.comprehension/attestations.yaml`
+is a flat list of records, each requiring `email`, `module` (a configured
+module name, not a glob), and `timestamp` (ISO-8601 with an explicit UTC
+offset — C6 applies here exactly as it does to `--as-of`; a tz-naive
+timestamp is rejected):
+
+```yaml
+- email: person@example.com
+  module: core
+  timestamp: "2026-09-08T00:00:00Z"
+```
+
+`magnitude` for an `ATTESTED` event is fixed at `SAT_LINES` (fully
+saturated): an attestation is a discrete "I re-walked this" claim, not a
+quantity scaled by lines touched the way `AUTHORED`/`AGENT_MEDIATED` are.
+`person` resolves through the same `identity` config map as git-derived
+evidence, keyed by `email`.
+
 ### 2.1 Evidence extraction: git invocation contract
 
 C6 requires "same repository state + same config = same map, bit for bit."
