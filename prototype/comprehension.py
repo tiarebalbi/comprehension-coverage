@@ -30,6 +30,9 @@ DEFAULTS = {
                                  # module's churn since the evidence -> 0 (CALIBRATION.md
                                  # candidate 1); 0 recovers the flat, unstretched floor
 
+    "ref": "HEAD",  # git ref whose reachable history is analyzed (SPEC §2.1)
+                    # -- not --all: determinism must not depend on which
+                    # other refs a clone happens to have fetched.
     "churn_cap": 4.0,
     "sat_lines": 400.0,
     "theta_person": 0.5,
@@ -44,6 +47,21 @@ DEFAULTS = {
     "modules": {},            # module name -> list of path globs
     "critical": [],           # module names gated in --gate mode
 }
+
+
+def parse_as_of(s: str) -> int:
+    """Parse an ISO-8601 --as-of instant. C6 requires an explicit instant,
+    never one resolved against the invoking machine's timezone -- so a
+    tz-naive string (no offset, no trailing 'Z') is rejected rather than
+    silently interpreted in local time."""
+    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        raise ValueError(
+            f"--as-of {s!r} has no UTC offset; C6 forbids resolving it "
+            "against the local machine's timezone. Use an explicit offset, "
+            "e.g. '2026-09-13T00:00:00Z'."
+        )
+    return int(dt.timestamp())
 
 
 def load_config(path: str) -> dict:
@@ -71,12 +89,16 @@ class Commit:
     files: list[tuple[int, int, str]] = field(default_factory=list)  # add, del, path
 
 
-def read_commits(repo: str) -> list[Commit]:
-    """Full first-parent-inclusive history, oldest first, with numstat."""
+def read_commits(repo: str, ref: str = "HEAD") -> list[Commit]:
+    """History reachable from `ref` only (SPEC §2.1 -- not --all: the result
+    must not depend on which other refs a clone happens to have fetched),
+    with numstat. Returned oldest-first, ties broken by SHA: a total order
+    fixed in code, not delegated to git's own same-timestamp ordering,
+    which §2.1 notes is not guaranteed stable across git versions."""
     fmt = "@@C@@%n%H%n%an%n%ae%n%at%n%(trailers:key=Co-Authored-By,valueonly)%n@@F@@"
     out = subprocess.run(
-        ["git", "-C", repo, "log", "--all", "--numstat", "--no-renames",
-         "--date-order", "--reverse", f"--pretty=format:{fmt}"],
+        ["git", "-C", repo, "log", ref, "--numstat", "--no-renames",
+         f"--pretty=format:{fmt}"],
         capture_output=True, text=True, check=True, errors="replace",
     ).stdout
     commits: list[Commit] = []
@@ -100,6 +122,7 @@ def read_commits(repo: str) -> list[Commit]:
                 add = 0 if parts[0] == "-" else int(parts[0])
                 dele = 0 if parts[1] == "-" else int(parts[1])
                 cur.files.append((add, dele, parts[2]))
+    commits.sort(key=lambda c: (c.timestamp, c.sha))
     return commits
 
 # ---------------------------------------------------------------- model
@@ -241,12 +264,17 @@ def main() -> int:
     a = ap.parse_args()
 
     cfg = load_config(a.config)
-    as_of = int(datetime.fromisoformat(a.as_of.replace("Z", "+00:00")).timestamp()) \
-        if a.as_of else int(
-            subprocess.run(["git", "-C", a.repo, "log", "-1", "--format=%at"],
+    if a.as_of:
+        try:
+            as_of = parse_as_of(a.as_of)
+        except ValueError as e:
+            sys.exit(str(e))
+    else:
+        as_of = int(
+            subprocess.run(["git", "-C", a.repo, "log", cfg["ref"], "-1", "--format=%at"],
                            capture_output=True, text=True, check=True).stdout.strip())
 
-    commits = read_commits(a.repo)
+    commits = read_commits(a.repo, cfg["ref"])
     events, sizes = collect(cfg, commits, as_of)
     scores = score_all(cfg, events, sizes, as_of)
     modules = build_map(cfg, scores, sizes)

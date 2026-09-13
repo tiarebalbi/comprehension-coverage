@@ -181,6 +181,33 @@ this candidate resolves as documentation only, unlike candidate 1.
 
 ---
 
+## Note: C6 determinism gaps (git ref scope, tz-naive `--as-of`) — resolved, issue #3
+
+Not one of RUN-NOTES' two candidates, but load-bearing for reproducing any
+of them: `--as-of` was parsed via
+`datetime.fromisoformat(...).timestamp()` on a possibly tz-naive datetime,
+which resolves in the invoking machine's local timezone — a direct C6
+violation ("no wall-clock reads... the 'as of' instant is an explicit
+input"). Separately, `read_commits()` used `git log --all --date-order
+--reverse`: `--all` makes the result depend on which refs a clone happens
+to have fetched (not just the branch being analyzed), and `--date-order`'s
+same-timestamp tie-break isn't guaranteed stable across git versions. The
+candidate 1 experiment above hit this directly: its pinned express clone
+parsed 6,422 commits via `--all`, not the 6,169 RUN-NOTES' original run
+cited.
+
+**Resolved** in issue #3: new `parse_as_of()` rejects tz-naive input
+outright. `read_commits()` now takes an explicit `config["ref"]` (default
+`HEAD`), and sorts fetched commits by `(timestamp, sha)` in code — the
+total order `collect()` depends on is fixed where it's specified and
+testable, not delegated to git. Documented as `SPEC.md` §2.1, the contract
+the Kotlin ingestion track (#6) implements against. Re-verified against the
+same pinned clone: scoped to `HEAD`, it now parses exactly 6,169 commits —
+matching RUN-NOTES' original citation exactly, closing the reproducibility
+gap noted above.
+
+---
+
 ## Note: `ATTESTED` is declared but unimplemented
 
 Not one of RUN-NOTES' two candidates, but adjacent and worth tracking here:

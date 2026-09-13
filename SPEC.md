@@ -113,6 +113,40 @@ under-detects agent code in repos with poor hygiene (see §6 limits).
 listed in config and excluded from *current* comprehender counts while retained
 in history.
 
+### 2.1 Evidence extraction: git invocation contract
+
+C6 requires "same repository state + same config = same map, bit for bit."
+Two things the earlier prototype left implicit could each break that:
+
+1. **Ref scope.** History must be read from a single named ref —
+   `config["ref"]`, default `HEAD` — not from every ref a clone happens to
+   have fetched. A prior implementation used `git log --all`, which makes
+   the result depend on which branches/tags happen to be present locally
+   (a fresh clone of a default branch vs. one with extra fetched feature
+   branches answers differently for the identical target commit). The
+   contract is: **the full history reachable from `config["ref"]`** —
+   ordinary git traversal (all parents of merge commits included, not
+   first-parent-only, so evidence from merged-in branches isn't silently
+   dropped), scoped to that one ref.
+2. **Total order.** Evidence extraction (`collect()`) processes commits
+   oldest-first and depends on that order being a stable *total* order —
+   two commits sharing the same author timestamp are not ordered by git in
+   a way every git version is guaranteed to agree on. The contract is:
+   after fetching, **sort commits by `(timestamp, sha)` ascending** in the
+   implementation itself (not `git log`'s own `--date-order`/`--reverse`
+   flags). This fixes the tie-break in code, where it's specified and
+   testable, rather than delegating it to git's internal, version-dependent
+   ordering.
+
+Reference invocation (numstat and trailer fields per the implementation's
+needs; the two determinism-relevant properties are the ref argument and the
+post-fetch sort):
+
+```
+git -C <repo> log <config["ref"]> --numstat --no-renames --pretty=format:<fmt>
+# then: sort parsed commits by (timestamp, sha) ascending before use
+```
+
 ---
 
 ## 3. Scoring (reference semantics)
