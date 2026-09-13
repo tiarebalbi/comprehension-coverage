@@ -1,0 +1,13 @@
+{
+  "modules": {
+    "application": ["lib/application.js", "lib/express.js"],
+    "request":     ["lib/request.js"],
+    "response":    ["lib/response.js"],
+    "view":        ["lib/view.js"],
+    "utils":       ["lib/utils.js"],
+    "router":      ["lib/router*", "lib/router/*"],
+    "middleware":  ["lib/middleware/*"],
+    "tests":       ["test/*", "test/**/*"]
+  },
+  "critical": ["application", "response", "router"]
+}

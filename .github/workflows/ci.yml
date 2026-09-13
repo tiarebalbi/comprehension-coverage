@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  prototype:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run prototype test suite
+        run: python3 prototype/test_comprehension.py
+
+      - name: Fail if fixtures/ drifted from committed state
+        run: |
+          git diff --exit-code -- fixtures/ || {
+            echo "::error::fixtures/ changed after regenerating the golden fixture." \
+                 "Fixtures are committed artifacts (SPEC.md A4) — drift must be" \
+                 "deliberate: regenerate locally, review the diff, and commit it" \
+                 "explicitly."
+            exit 1
+          }

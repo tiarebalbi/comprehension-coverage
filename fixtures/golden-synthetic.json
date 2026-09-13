@@ -1,0 +1,18 @@
+{
+  "as_of": 1728512000,
+  "modules": {
+    "core": {
+      "comprehenders": 0,
+      "status": "DARK"
+    },
+    "web": {
+      "comprehenders": 1,
+      "status": "AT_RISK"
+    }
+  },
+  "scores": {
+    "Alice|core": 0.080586,
+    "Bob|web": 0.811964,
+    "Tiare|core": 0.26727
+  }
+}
