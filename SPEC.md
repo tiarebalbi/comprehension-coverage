@@ -128,8 +128,13 @@ timestamp is rejected):
 `magnitude` for an `ATTESTED` event is fixed at `SAT_LINES` (fully
 saturated): an attestation is a discrete "I re-walked this" claim, not a
 quantity scaled by lines touched the way `AUTHORED`/`AGENT_MEDIATED` are.
-`person` resolves through the same `identity` config map as git-derived
-evidence, keyed by `email`.
+`person` resolves in the same priority order as any git-derived evidence:
+(1) the `identity` config map, keyed by `email`; (2) if unmapped, the
+author name most recently used with that `email` in git history at or
+before the attestation's `timestamp` (deterministic under §2.1's total
+order — an attestor's git identity and attestation identity must resolve
+to the same person, not fork into two); (3) the raw `email` string, only
+if that email never appears in the repository's history at all.
 
 ### 2.1 Evidence extraction: git invocation contract
 
@@ -154,7 +159,8 @@ Two things the earlier prototype left implicit could each break that:
    implementation itself (not `git log`'s own `--date-order`/`--reverse`
    flags). This fixes the tie-break in code, where it's specified and
    testable, rather than delegating it to git's internal, version-dependent
-   ordering.
+   ordering. `ATTESTED` events (above) are folded into the same total order
+   when resolving identity and computing churn-based decay.
 
 Reference invocation (numstat and trailer fields per the implementation's
 needs; the two determinism-relevant properties are the ref argument and the

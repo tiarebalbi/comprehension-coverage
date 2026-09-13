@@ -4,6 +4,8 @@ detection, plus a golden test against a deterministic synthetic repository.
 
 Run: python3 test_comprehension.py
 """
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -208,16 +210,19 @@ def test_read_attestations_missing_file_returns_empty():
         shutil.rmtree(tmp)
 
 
-def test_read_attestations_parses_and_resolves_identity():
+def test_read_attestations_returns_raw_email():
+    # read_attestations no longer resolves identity itself -- that needs
+    # the commit stream (SPEC §2.1 total order), which only collect() has.
+    # It returns the raw (lowercased) email; collect() does the resolution.
     tmp = tempfile.mkdtemp()
     try:
-        cfg = cfg_with(identity={"dana@example.com": "Dana"})
+        cfg = cfg_with()
         write_attestations(tmp, [
-            {"email": "dana@example.com", "module": "core",
+            {"email": "Dana@Example.com", "module": "core",
              "timestamp": "2026-09-08T00:00:00Z"},
         ])
         attestations = cc.read_attestations(tmp, cfg)
-        assert attestations == [("Dana", "core", 1788825600)]
+        assert attestations == [("dana@example.com", "core", 1788825600)]
     finally:
         shutil.rmtree(tmp)
 
@@ -247,7 +252,12 @@ def test_read_attestations_skips_unknown_module():
             {"email": "dana@example.com", "module": "nonexistent",
              "timestamp": "2026-09-08T00:00:00Z"},
         ])
-        assert cc.read_attestations(tmp, cfg) == []
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = cc.read_attestations(tmp, cfg)
+        assert result == []
+        warning = stderr.getvalue()
+        assert "attestations.yaml" in warning and "nonexistent" in warning, warning
     finally:
         shutil.rmtree(tmp)
 
@@ -257,13 +267,34 @@ def test_collect_folds_attestations_without_adding_churn():
     # churn_after -- it's a self-report, not a code change.
     cfg = cfg_with()
     c = cc.Commit("x", "Alice", "alice@example.com", T0, [], [(400, 0, "src/core/e.txt")])
-    attestations = [("Dana", "core", T0 + 10 * DAY)]
+    attestations = [("dana@example.com", "core", T0 + 10 * DAY)]
     events, sizes = cc.collect(cfg, [c], T0 + 20 * DAY, attestations)
     alice_ev = next(e for e in events if e.person == "Alice")
     assert alice_ev.churn_after == 0.0  # Dana's attestation contributed no lines
     dana_ev = next(e for e in events if e.etype == "ATTESTED")
-    assert dana_ev.person == "Dana" and dana_ev.module == "core"
+    # no identity mapping and no git history for dana@example.com -> raw email
+    assert dana_ev.person == "dana@example.com" and dana_ev.module == "core"
     assert dana_ev.magnitude == cfg["sat_lines"]
+
+
+def test_attestation_identity_resolves_via_commit_stream():
+    # An attestation email with no `identity` config entry must resolve to
+    # the same person as their git commits, not fork into a separate
+    # "email-as-name" identity (SPEC §2.1: most recent author name used
+    # with that email at or before the attestation's timestamp).
+    cfg = cfg_with()  # no identity map
+    c = cc.Commit("x", "Carol", "carol@example.com", T0, [], [(400, 0, "src/core/e.txt")])
+    attestations = [("carol@example.com", "core", T0 + 10 * DAY)]
+    events, _ = cc.collect(cfg, [c], T0 + 20 * DAY, attestations)
+    people = {e.person for e in events}
+    assert people == {"Carol"}, people  # not {"Carol", "carol@example.com"}
+
+
+def test_attestation_identity_falls_back_to_raw_email_when_no_history():
+    cfg = cfg_with()
+    attestations = [("ghost@example.com", "core", T0)]
+    events, _ = cc.collect(cfg, [], T0, attestations)
+    assert events[0].person == "ghost@example.com"
 
 
 # ---------------------------------------------------------------- golden test

@@ -229,3 +229,16 @@ discrete claim, not scaled by lines). Golden fixture gained a case: Dana
 holds attestation-only evidence on `web` (no git history at all), moving
 `web` from `AT_RISK` to `COVERED` — `weights.ATTESTED` (0.6) is now
 exercised, not just an unused default.
+
+**Review fixups:** identity resolution for an unmapped attestation email
+now falls back to that email's most recent git author name (SPEC §2.1
+total order) before falling back to the raw email, so a person's git and
+attestation evidence can't fork into two identities — `read_attestations`
+itself no longer resolves identity at all, since only `collect()` has the
+commit stream needed to do it correctly. An attestation naming an
+unconfigured module is still skipped (a subset-module config is a
+legitimate run mode) but now prints a one-line warning naming the record,
+rather than dropping it silently. `parse_as_of` (issue #3) is now the one
+C6 timestamp parser in the codebase — attestation timestamps go through it
+too (with a context-specific error label) instead of a separate, near-
+identical `_parse_attestation_timestamp`.
