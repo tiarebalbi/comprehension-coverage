@@ -92,3 +92,13 @@ fun readCommits(repo: String, ref: String = "HEAD"): List<Commit> {
     }
     return commits.sortedWith(compareBy({ it.timestamp }, { it.sha }))
 }
+
+/** The timestamp of `ref`'s most recent commit -- mirrors `main()`'s fallback when `--as-of` is omitted. */
+fun lastCommitTimestamp(repo: String, ref: String): Long {
+    val process = ProcessBuilder("git", "-C", repo, "log", ref, "-1", "--format=%at")
+        .redirectError(ProcessBuilder.Redirect.INHERIT).start()
+    val stdoutBytes = process.inputStream.readBytes()
+    val exit = process.waitFor()
+    check(exit == 0) { "git log $ref -1 exited $exit" }
+    return decodeReplacing(stdoutBytes).trim().toLong()
+}

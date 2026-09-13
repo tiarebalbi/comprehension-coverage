@@ -47,13 +47,15 @@ data class ModuleReport(
 )
 
 /**
- * Python's `round(s, 4)` is round-half-to-even on the underlying binary
+ * Python's `round(x, n)` is round-half-to-even on the underlying binary
  * double, not `HALF_UP`. `BigDecimal(x)` (not `BigDecimal.valueOf(x)`, which
  * round-trips through `Double.toString()` first) preserves the exact binary
  * value, so `HALF_EVEN` here matches Python's rounding of the same double.
+ * Public: [buildModuleMap] uses 4 decimals (display/threshold rounding);
+ * the golden fixture's `scores` section (#8) uses 6.
  */
-private fun roundScore(x: Double): Double =
-    BigDecimal(x).setScale(4, RoundingMode.HALF_EVEN).toDouble()
+fun pythonRound(x: Double, decimals: Int): Double =
+    BigDecimal(x).setScale(decimals, RoundingMode.HALF_EVEN).toDouble()
 
 /**
  * Ports the prototype's `build_map`. Note the threshold check compares
@@ -70,7 +72,7 @@ fun buildModuleMap(
     for (mod in moduleNames.sorted()) {
         val people = scores.entries
             .filter { (key, _) -> key.second == mod }
-            .map { (key, score) -> key.first to roundScore(score) }
+            .map { (key, score) -> key.first to pythonRound(score, 4) }
             .sortedWith(compareByDescending<Pair<String, Double>> { it.second }.thenBy { it.first })
         val comprehenders = people.count { (person, score) ->
             score >= config.thetaPerson && person !in config.departed
