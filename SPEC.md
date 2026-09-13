@@ -63,6 +63,45 @@ Declared interfaces, no v0.1 implementation: `REVIEWED` (forge API),
 `INCIDENT_DIAGNOSED` (incident tooling), `ADR_AUTHORED`. The schema reserves
 their names so fixtures stay stable when they land.
 
+**`REVIEWED` interface contract (declared, not implemented in v0.1;
+CALIBRATION.md candidate 2, decided 2026-09-13):** the express run
+(RUN-NOTES.md) surfaced the predicted gap directly — current maintainers
+who demonstrably hold theory of the codebase (they run releases and review
+every consequential PR) score near zero, because v0.1 only ingests git
+history and review leaves no trace there. `REVIEWED` is reserved, not
+built, for v0.1: this note fixes the contract a future implementation
+lands against, so it doesn't have to be re-derived from scratch.
+
+- **Event shape:** `(person, module, REVIEWED, timestamp, magnitude)` — the
+  same tuple every evidence type uses (§2, top).
+- **Expected source:** a forge API (GitHub/GitLab/etc. PR review
+  submissions), not git history — a `REVIEWED` event is emitted per
+  qualifying review action (e.g. an "approve" or a substantive
+  change-requested review), attributed to the reviewer, not the author.
+- **Magnitude:** left open pending real review data, but the two
+  precedents already in v0.1 bound the design space: `AUTHORED`/
+  `AGENT_MEDIATED` scale magnitude by lines touched (a continuous
+  quantity the forge API can supply per review, e.g. lines in the diff
+  reviewed); `ATTESTED` instead fixes magnitude at `SAT_LINES` (a discrete
+  self-report). A review is closer to the `ATTESTED` shape in spirit — a
+  qualitative act ("I reviewed this"), not inherently size-scaled — but
+  unlike a self-attestation it does have a real diff size available from
+  the forge API, so scaling by reviewed-lines is defensible too. Whoever
+  implements this should decide against real review data, not by
+  assumption.
+- **Weight composition:** not assigned a `weights.REVIEWED` default in §4
+  — adding one now would be committing to a number with no data behind it.
+  Qualitatively, review evidence sits somewhere between `AGENT_MEDIATED`
+  (0.3 — weaker than hand authorship by construction, C7) and `AUTHORED`
+  (1.0 — the anchor): a careful review builds real theory of a module but
+  is generally lighter-touch than authoring it, and review depth varies
+  enormously in ways a forge API can't directly measure (a rubber-stamp
+  approval and a line-by-line review both register as one `REVIEWED`
+  event). Its weight is PROVISIONAL from the moment it's implemented,
+  exactly like every other weight in §4, and should go through the same
+  calibration process (`CALIBRATION.md`) rather than shipping a guessed
+  default.
+
 **Agent markers** (configurable lists):
 - Trailer emails: `noreply@anthropic.com`, `copilot@github.com`,
   `cursoragent@cursor.com` (extend in config).

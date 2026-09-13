@@ -172,10 +172,12 @@ comprehension held in evidence classes it does not ingest."
 unimplemented). The decision is to *keep* it out of v0.1 scope and document
 the interface contract, not to build it now.
 
-**Status:** OPEN. Resolution is issue #2 (see `PLAN.md`) — document the
-decision and the `REVIEWED` interface contract (event shape, expected
-source, how its weight would compose with existing evidence once
-implemented) without implementing ingestion.
+**Status:** ACCEPTED — declared-interface-only for v0.1, no ingestion
+built. `SPEC.md` §2 now carries the full interface contract (event shape,
+expected forge-API source, and the reasoning for leaving `weights.REVIEWED`
+unassigned rather than guessing a default) so a future implementation has
+something to land against instead of re-deriving intent. No code changes:
+this candidate resolves as documentation only, unlike candidate 1.
 
 ---
 

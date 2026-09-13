@@ -25,7 +25,7 @@ A3 ONE FAILURE — PASS, and it is the interesting kind. Current maintainers
 (Ulises Gascón, Chris de Almeida) demonstrably hold theory of express — they
 run releases and review every consequential PR — yet score near zero on core
 modules and appear only via `tests`. Two distinct causes, both model-level:
-  1. Missing evidence class: REVIEW evidence is invisible to plain git history.
+  1. Missing evidence class: REVIEWED evidence is invisible to plain git history.
      The people who understand express today mostly *review*; v0.1 only sees
      *authorship*. Exactly the predicted failure: an evidence detector is blind
      to comprehension held in evidence classes it does not ingest.
