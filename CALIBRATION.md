@@ -65,10 +65,16 @@ pinned clone and `--as-of`:
 | (b) flat lengthen | 540d | 0 (disabled) |
 | (c) quiescence-scaled | 180d | 2.0 |
 
-**Module-level result:** identical `status` and `comprehenders` count across
-all three variants on every module (`application`/`middleware`/`response`/
-`router`/`utils`/`view` stay `DARK`; `request` stays `AT_RISK` with 1
-comprehender). This calibration issue is about whether *evidence scores*
+**Module-level result:** identical `status` on every module across all three
+variants (`application`/`middleware`/`response`/`router`/`utils`/`view` stay
+`DARK`; `request` stays `AT_RISK`). Comprehender counts are identical too,
+except `tests`, which moves from 3 comprehenders (baseline) to 8 in both (b)
+and (c) — several historical `tests` authors were being wall-clock-erased
+despite `tests` itself having had comparatively little churn since their
+contributions, the same mechanism working as intended. `tests` stays
+`COVERED` in all three variants, so this is a count change, not a status
+change, and non-critical (`tests` isn't in `express-config.json`'s
+`critical` list). This calibration issue is about whether *evidence scores*
 correctly reflect decayed-but-real standing — it does not, and should not,
 manufacture comprehenders where the underlying evidence classes v0.1 can see
 (authorship) don't support it. That gap is candidate 2 (`REVIEWED`
