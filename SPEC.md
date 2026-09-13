@@ -113,6 +113,29 @@ under-detects agent code in repos with poor hygiene (see §6 limits).
 listed in config and excluded from *current* comprehender counts while retained
 in history.
 
+**`ATTESTED` file schema and magnitude convention:** `.comprehension/attestations.yaml`
+is a flat list of records, each requiring `email`, `module` (a configured
+module name, not a glob), and `timestamp` (ISO-8601 with an explicit UTC
+offset — C6 applies here exactly as it does to `--as-of`; a tz-naive
+timestamp is rejected):
+
+```yaml
+- email: person@example.com
+  module: core
+  timestamp: "2026-09-08T00:00:00Z"
+```
+
+`magnitude` for an `ATTESTED` event is fixed at `SAT_LINES` (fully
+saturated): an attestation is a discrete "I re-walked this" claim, not a
+quantity scaled by lines touched the way `AUTHORED`/`AGENT_MEDIATED` are.
+`person` resolves in the same priority order as any git-derived evidence:
+(1) the `identity` config map, keyed by `email`; (2) if unmapped, the
+author name most recently used with that `email` in git history at or
+before the attestation's `timestamp` (deterministic under §2.1's total
+order — an attestor's git identity and attestation identity must resolve
+to the same person, not fork into two); (3) the raw `email` string, only
+if that email never appears in the repository's history at all.
+
 ### 2.1 Evidence extraction: git invocation contract
 
 C6 requires "same repository state + same config = same map, bit for bit."
@@ -136,7 +159,8 @@ Two things the earlier prototype left implicit could each break that:
    implementation itself (not `git log`'s own `--date-order`/`--reverse`
    flags). This fixes the tie-break in code, where it's specified and
    testable, rather than delegating it to git's internal, version-dependent
-   ordering.
+   ordering. `ATTESTED` events (above) are folded into the same total order
+   when resolving identity and computing churn-based decay.
 
 Reference invocation (numstat and trailer fields per the implementation's
 needs; the two determinism-relevant properties are the ref argument and the

@@ -15,6 +15,7 @@ import argparse
 import fnmatch
 import json
 import math
+import os
 import subprocess
 import sys
 from collections import defaultdict
@@ -49,15 +50,17 @@ DEFAULTS = {
 }
 
 
-def parse_as_of(s: str) -> int:
-    """Parse an ISO-8601 --as-of instant. C6 requires an explicit instant,
-    never one resolved against the invoking machine's timezone -- so a
-    tz-naive string (no offset, no trailing 'Z') is rejected rather than
-    silently interpreted in local time."""
+def parse_as_of(s: str, label: str = "--as-of") -> int:
+    """Parse an ISO-8601 instant. C6 requires an explicit instant, never one
+    resolved against the invoking machine's timezone -- so a tz-naive
+    string (no offset, no trailing 'Z') is rejected rather than silently
+    interpreted in local time. This is the one C6 timestamp parser in the
+    codebase -- every caller (the --as-of flag, attestation timestamps)
+    goes through it; `label` only adjusts the error message for context."""
     dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
     if dt.tzinfo is None:
         raise ValueError(
-            f"--as-of {s!r} has no UTC offset; C6 forbids resolving it "
+            f"{label} {s!r} has no UTC offset; C6 forbids resolving it "
             "against the local machine's timezone. Use an explicit offset, "
             "e.g. '2026-09-13T00:00:00Z'."
         )
@@ -125,6 +128,69 @@ def read_commits(repo: str, ref: str = "HEAD") -> list[Commit]:
     commits.sort(key=lambda c: (c.timestamp, c.sha))
     return commits
 
+
+def read_attestations(repo: str, cfg: dict) -> list[tuple[str, str, int]]:
+    """Parse .comprehension/attestations.yaml (SPEC §2): explicit "I
+    re-walked this module" records. Returns (email, module, timestamp)
+    triples -- email lowercased, not yet resolved to a person. Identity
+    resolution happens in collect(), which has the chronological commit
+    stream needed to resolve an unmapped email deterministically (SPEC
+    §2.1); read_attestations has no such context on its own.
+
+    Hand-rolled reader for a restricted YAML subset -- the project ships no
+    third-party dependencies (README), so this avoids a PyYAML dependency
+    by reading exactly the shape the schema below produces: a flat list of
+    `- key: value` mappings, no nesting, no multi-line scalars:
+
+        - email: person@example.com
+          module: core
+          timestamp: "2026-09-08T00:00:00Z"
+
+    Any real YAML document following this exact shape parses identically
+    under a full YAML parser, so adopting one later is not a format break.
+    """
+    path = os.path.join(repo, ".comprehension", "attestations.yaml")
+    if not os.path.isfile(path):
+        return []
+
+    records: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    with open(path) as f:
+        for raw in f:
+            line = raw.split("#", 1)[0].rstrip("\n")
+            if not line.strip():
+                continue
+            stripped = line.strip()
+            if stripped.startswith("- "):
+                if current is not None:
+                    records.append(current)
+                current = {}
+                stripped = stripped[2:]
+            if current is None:
+                raise ValueError(f"attestations.yaml: expected a list, got: {line!r}")
+            if ":" not in stripped:
+                raise ValueError(f"attestations.yaml: expected 'key: value', got: {line!r}")
+            key, _, value = stripped.partition(":")
+            current[key.strip()] = value.strip().strip('"').strip("'")
+    if current is not None:
+        records.append(current)
+
+    attestations: list[tuple[str, str, int]] = []
+    for rec in records:
+        for required in ("email", "module", "timestamp"):
+            if required not in rec:
+                raise ValueError(f"attestations.yaml: record missing {required!r}: {rec}")
+        if rec["module"] not in cfg["modules"]:
+            # A subset-module config is a legitimate run mode, so this is a
+            # skip, not an error -- but silent drops are how real data goes
+            # missing unnoticed, so name the record on the way out.
+            print(f"comprehension: attestations.yaml: skipping record for "
+                  f"unconfigured module {rec['module']!r}: {rec}", file=sys.stderr)
+            continue
+        ts = parse_as_of(rec["timestamp"], "attestations.yaml timestamp")
+        attestations.append((rec["email"].strip().lower(), rec["module"], ts))
+    return attestations
+
 # ---------------------------------------------------------------- model
 
 def canonical(cfg: dict, name: str, email: str) -> str:
@@ -160,36 +226,76 @@ class Evidence:
     churn_after: float = 0.0  # filled in at the end: churn by others after event
 
 
-def collect(cfg: dict, commits: list[Commit], as_of: int):
+def collect(cfg: dict, commits: list[Commit], as_of: int,
+            attestations: list[tuple[str, str, int]] | None = None):
     """Build evidence events and per-module churn/size, deterministic order.
 
     churn_after(e) = (final_total[m] - total_at(e)) - (final_own[m,p] - own_at(e))
     i.e. lines changed in the module by anyone other than the event's person,
     between the event and the as-of instant. O(events), not O(events^2).
+
+    `attestations` (SPEC §2, (email, module, timestamp) triples from
+    read_attestations, email lowercased and NOT yet resolved to a person)
+    are folded into the same chronological pass so their total_at/own_at
+    snapshots -- and therefore their churn-based decay -- reflect real
+    churn up to their timestamp. An attestation itself contributes no
+    lines: it doesn't mutate `total`/`own`, since it's a self-report, not a
+    code change. Its magnitude is fixed at `cfg["sat_lines"]` (fully
+    saturated: a re-walk is a discrete claim, not something scaled by
+    lines touched).
+
+    Identity resolution for an attestation's email (SPEC §2 ATTESTED note):
+    (1) the `identity` config map, same as any git evidence; (2) if
+    unmapped, the author name most recently used with that email by a
+    commit at or before the attestation's timestamp, walking the same
+    total order this function already establishes; (3) the raw email
+    string, only if it never appears in the commit stream at all. This
+    keeps one person from forking into two identities depending on whether
+    their evidence came from git or from an attestation.
     """
     events: list[Evidence] = []
     module_size: dict[str, float] = defaultdict(float)
     total: dict[str, float] = defaultdict(float)            # module -> churn
     own: dict[tuple[str, str], float] = defaultdict(float)  # (module, person)
-    for c in commits:
-        if c.timestamp > as_of:
-            continue
-        person = canonical(cfg, c.author_name, c.author_email)
-        etype = "AGENT_MEDIATED" if is_agent_mediated(cfg, c) else "AUTHORED"
-        per_mod: dict[str, float] = defaultdict(float)
-        for add, dele, path in c.files:
-            mod = module_of(cfg, path)
-            if mod is None:
-                continue
-            per_mod[mod] += add + dele
-            module_size[mod] += add - dele
-        for mod, lines in sorted(per_mod.items()):
-            if lines <= 0:
-                continue
-            events.append(Evidence(person, mod, etype, c.timestamp, lines,
+    last_name_for_email: dict[str, str] = {}
+
+    # merge commits and attestations into one chronological action stream so
+    # attestations see the correct as-of-that-instant churn snapshot AND the
+    # correct as-of-that-instant identity; ties at the same timestamp process
+    # commits first (stable, deterministic) so "at or before" includes same-
+    # timestamp commits.
+    actions: list[tuple[int, int, object]] = (
+        [(c.timestamp, 0, c) for c in commits if c.timestamp <= as_of] +
+        [(ts, 1, (email, mod)) for email, mod, ts in (attestations or []) if ts <= as_of]
+    )
+    actions.sort(key=lambda a: (a[0], a[1]))
+
+    for ts, kind, payload in actions:
+        if kind == 0:
+            c = payload
+            last_name_for_email[c.author_email] = c.author_name
+            person = canonical(cfg, c.author_name, c.author_email)
+            etype = "AGENT_MEDIATED" if is_agent_mediated(cfg, c) else "AUTHORED"
+            per_mod: dict[str, float] = defaultdict(float)
+            for add, dele, path in c.files:
+                mod = module_of(cfg, path)
+                if mod is None:
+                    continue
+                per_mod[mod] += add + dele
+                module_size[mod] += add - dele
+            for mod, lines in sorted(per_mod.items()):
+                if lines <= 0:
+                    continue
+                events.append(Evidence(person, mod, etype, ts, lines,
+                                       total_at=total[mod], own_at=own[(mod, person)]))
+                total[mod] += lines
+                own[(mod, person)] += lines
+        else:
+            email, mod = payload
+            fallback_name = last_name_for_email.get(email, email)
+            person = canonical(cfg, fallback_name, email)
+            events.append(Evidence(person, mod, "ATTESTED", ts, cfg["sat_lines"],
                                    total_at=total[mod], own_at=own[(mod, person)]))
-            total[mod] += lines
-            own[(mod, person)] += lines
     for e in events:
         e.churn_after = (total[e.module] - e.total_at) \
             - (own[(e.module, e.person)] - e.own_at) - 0.0
@@ -275,7 +381,8 @@ def main() -> int:
                            capture_output=True, text=True, check=True).stdout.strip())
 
     commits = read_commits(a.repo, cfg["ref"])
-    events, sizes = collect(cfg, commits, as_of)
+    attestations = read_attestations(a.repo, cfg)
+    events, sizes = collect(cfg, commits, as_of, attestations)
     scores = score_all(cfg, events, sizes, as_of)
     modules = build_map(cfg, scores, sizes)
 

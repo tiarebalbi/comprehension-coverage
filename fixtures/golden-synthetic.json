@@ -6,13 +6,14 @@
       "status": "DARK"
     },
     "web": {
-      "comprehenders": 1,
-      "status": "AT_RISK"
+      "comprehenders": 2,
+      "status": "COVERED"
     }
   },
   "scores": {
     "Alice|core": 0.156799,
     "Bob|web": 1.0,
+    "Dana|web": 0.596162,
     "Tiare|core": 0.288667
   }
 }
