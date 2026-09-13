@@ -81,7 +81,8 @@ in history.
 For evidence event `e` of person `p` in module `m`, evaluated "as of" instant T:
 
 ```
-effective_age(e, T) = churn_ratio(e, T) / H_churn  +  days(e, T) / H_wall
+H_wall_eff(e, T)    = H_wall * (1 + Q * (1 - churn_ratio(e, T) / CHURN_CAP))
+effective_age(e, T) = churn_ratio(e, T) / H_churn  +  days(e, T) / H_wall_eff(e, T)
 decay(e, T)         = 0.5 ^ effective_age(e, T)
 value(e)            = weight(type) * saturate(magnitude)
 score(p, m, T)      = min(1.0, Σ_e value(e) * decay(e, T))
@@ -91,6 +92,18 @@ score(p, m, T)      = min(1.0, Σ_e value(e) * decay(e, T))
   `e.timestamp` and `T`, divided by module size at T (capped at `CHURN_CAP`).
 - `saturate(x)` = `min(1.0, sqrt(x / SAT_LINES))` — the tenth hundred-line
   commit teaches less than the first.
+- `H_wall_eff(e, T)` is the **quiescence-scaled wall-clock floor**
+  (CALIBRATION.md candidate 1, decided 2026-09-13): the wall-clock half-life
+  stretches toward `H_wall * (1 + Q)` as `churn_ratio(e, T) → 0` (the module
+  has barely moved since `e` — a frozen module should not force-decay its
+  evidence on elapsed time alone) and relaxes to the plain `H_wall` as
+  `churn_ratio(e, T) → CHURN_CAP` (the module has been fully rewritten by
+  others since `e` — that evidence should decay exactly as fast as the
+  un-stretched floor would decay it; the stretch must not give already
+  churned-away evidence a second reprieve). `Q = 0` recovers the original
+  flat floor exactly. This directly implements C3's ordering ("decays
+  primarily as the module changes... secondarily with elapsed time"): the
+  wall-clock term now only dominates when the churn term has nothing to say.
 - A person is a **current comprehender** of `m` iff `score(p,m,T) ≥ θ_person`.
 
 **Module status:**
@@ -101,12 +114,13 @@ score(p, m, T)      = min(1.0, Σ_e value(e) * decay(e, T))
 | `AT_RISK` | comprehenders = 1..θ_covered−1 |
 | `DARK` | comprehenders = 0 |
 
-## 4. Tunable parameters — ALL PROVISIONAL pending first-run calibration
+## 4. Tunable parameters — PROVISIONAL pending first-run calibration, except where marked CALIBRATED
 
 | Param | Default | Rationale sketch | Status |
 |---|---|---|---|
 | `H_churn` | 1.0 (one full rewrite halves evidence) | plausibility only | PROVISIONAL |
-| `H_wall` | 180 days | Krüger's 30–45d is per-file recall; module-level theory assumed slower | PROVISIONAL |
+| `H_wall` | 180 days | Krüger's 30–45d is per-file recall; module-level theory assumed slower | CALIBRATED (express run, 2026-09-13 — see CALIBRATION.md candidate 1; value unchanged, now modulated by `Q` below) |
+| `Q` (quiescence stretch) | 2.0 | express run: flat H_wall=540 fixed frozen-module false decay but also gave a 2.16× decay reprieve to evidence already superseded by others' churn (synthetic check, CALIBRATION.md); `Q=2` gives frozen modules the same fix (H_wall_eff→540) while fully-churned evidence keeps the exact un-stretched decay rate | CALIBRATED (express run, 2026-09-13 — see CALIBRATION.md candidate 1) |
 | `CHURN_CAP` | 4.0 | beyond 4 rewrites, treat as fully decayed path | PROVISIONAL |
 | `weight(AUTHORED)` | 1.0 | anchor | fixed as anchor |
 | `weight(AGENT_MEDIATED)` | 0.3 | RCT gap direction, magnitude unknown | PROVISIONAL |
