@@ -26,3 +26,17 @@ jobs:
                  "explicitly."
             exit 1
           }
+
+  kotlin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+          cache: "gradle"
+
+      - name: Build Kotlin scaffold
+        run: ./gradlew build
