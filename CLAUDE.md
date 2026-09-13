@@ -69,3 +69,15 @@ issue number the commit closes or advances.
 `SPEC.md` §2 reserves the name `REVIEWED` for the forge-API evidence class
 (declared interface, not implemented in v0.1). Use that spelling — not
 `REVIEW` — anywhere it's referenced, so the name is stable when it lands.
+
+## JSON: read with a library, write by hand
+
+Config *input* (issue #7) may use `kotlinx-serialization-json` — its
+`JsonObject` preserves key order, which `modules`' first-match-wins
+resolution (`moduleOf`) depends on. Do not use `org.json`: its `JSONObject`
+is backed by a plain `HashMap` and would silently break that ordering
+guarantee. The *output* writer (issue #8) stays hand-rolled regardless: it
+must byte-match Python's `json.dump(indent=2, sort_keys=True)`, and no
+off-the-shelf pretty-printer reproduces its separator and float-repr
+conventions (see the golden-fixture rule above). Do not treat the reader
+dependency as license to serialize output through the library.
