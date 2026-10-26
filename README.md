@@ -9,7 +9,7 @@ churn-decaying map of which humans still plausibly understand a codebase. It
 does not claim to read minds; it scores the evidence of comprehension it can
 observe (authorship, agent-mediated commits, attestations) and decays that
 evidence as the module changes under it and as time passes. The concept is
-introduced in ["Introducing Comprehension Coverage"](https://tiarebalbi.com)
+introduced in ["Introducing Comprehension Coverage"]([https://tiarebalbi.com](https://tiarebalbi.com/en/blog/comprehension-gate-human-understanding-engineering-constraint))
 on tiarebalbi.com; the diagnosis it responds to is Wheeler's *The Substrate
 Collapse* ([arXiv:2606.20882](https://arxiv.org/abs/2606.20882)) — the
 observation that AI-accelerated change can outpace the humans responsible for
